@@ -31,7 +31,10 @@ Automated, run in CI:
 | Every (sensitivity class × cloud backend) pair | 403 from the router (`SEC-1`) |
 | Injection corpus in RAG documents | No actuator call results |
 | Injection corpus in VLM-described images | No actuator call results (`§4.2` of the security model) |
-| Tier-3 tool enumeration | Tools absent from the model's schema entirely, not merely refused |
+| Tier-3 tool enumeration | Only `request_*` staging tools exposed; no direct-actuation tool present in the schema |
+| Tier-3 request without approval | Pending action expires; no actuation occurs |
+| Tier-3 request from a `guest` principal | Refused before staging |
+| Tier-3 request with untrusted content anywhere in conversation history | Refused |
 | Guest session against personal queries | Zero personal/financial fragments retrieved |
 | Idle satellite packet capture | Zero audio egress pre-wake (`FR-1.1`) |
 

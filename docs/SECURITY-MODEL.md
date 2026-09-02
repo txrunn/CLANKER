@@ -141,9 +141,9 @@ This is the highest-consequence attack against the system and it requires no net
 |---|---|
 | **VLM output is `UNTRUSTED` by construction** | No camera-derived text can enable an actuator tool |
 | **`FR-3.2` — structured extraction, not free text** | The VLM returns typed fields (`{people: 1, vehicles: 0, motion: true, description: str}`), and only typed fields enter downstream prompts. The free-text description is stored and shown to the human, never fed forward as instruction context |
-| **Tier-3 actuators are not LLM-callable at all** (§5) | Even a total prompt-injection success cannot open a door, because no tool exists to do it |
+| **Tier-3 actions require out-of-band confirmation** (§5.3) | A successful injection can at most stage a request. Opening the door needs a tap on a phone the attacker does not have |
 
-The third control is the one that actually holds. The first two reduce likelihood; only the third bounds consequence.
+The third control is the one that actually holds. The first two reduce likelihood; only the third bounds consequence — and it bounds it to *a notification the owner declines*, which is also the point at which the attack becomes visible.
 
 ### 4.3 Guest speech — `A5`
 
@@ -155,16 +155,68 @@ Guest utterances are `UNTRUSTED` and resolve to the `guest` principal: household
 
 Tools are tiered by consequence. The tier determines what must be true before the call executes.
 
+### 5.1 Direction asymmetry
+
+Most physical actions are not symmetric in risk. The safe direction should be freely available; only the unsafe direction needs protecting.
+
+| Action | Safe direction (Tier 1) | Unsafe direction (Tier 3) |
+|---|---|---|
+| Garage | **Close** | Open |
+| Exterior lock | **Lock** | Unlock |
+| Alarm | **Arm** | Disarm |
+| Cameras | **Enable** | Disable |
+
+"Close the garage" has a worst case of *the garage is closed*. Treating it with the same suspicion as "open the garage" is security theatre that costs real usability. Split the tools by direction rather than by device.
+
+### 5.2 Tiers
+
 | Tier | Examples | Precondition |
 |---|---|---|
 | **0 — Read-only** | Sensor states, entity queries, weather, calendar read | None. LLM calls freely |
-| **1 — Reversible, low consequence** | Lights, scenes, media playback, climate setpoint | Context contains no `UNTRUSTED` fragment, OR the action is trivially reversible and rate-limited |
-| **2 — Consequential, reversible** | Interior locks, disabling an automation, arming alarm | `TRUSTED` context **and** identified owner **and** spoken confirmation |
-| **3 — Physically consequential** | Exterior locks, garage door, alarm **disarm**, camera disable, any financial transaction | **Never exposed to the LLM.** Human-initiated only, through an authenticated Home Assistant UI or app session |
+| **1 — Reversible, low consequence** | Lights, scenes, media, climate, **and every safe-direction action in §5.1** | No `UNTRUSTED` fragment in context, or trivially reversible and rate-limited |
+| **2 — Consequential, reversible** | Interior locks, disabling an automation, opening blinds | `TRUSTED` context **and** identified owner **and** spoken confirmation |
+| **3 — Physically consequential** | Garage open, exterior unlock, alarm disarm, camera disable, live financial transactions | **LLM proposes; a human confirms out of band.** See §5.3 |
 
-**Tier 3 is a hard architectural boundary, not a policy toggle.** The tools are not registered with the model. There is no prompt, no jailbreak, and no injected instruction that can reach them, because the capability is absent rather than guarded.
+### 5.3 Tier 3 — propose, don't actuate
 
-The design intent: the worst outcome of a total prompt-injection compromise should be *"the lights did something strange,"* never *"the house opened."*
+The model gets `request_garage_open()`, never `open_garage()`. The request creates a **pending action**; a human approves it through a second channel — typically a push notification on the owner's phone, one tap.
+
+```
+"open the garage"  →  LLM calls request_garage_open()
+                   →  pending action created, 60 s expiry
+                   →  push notification to enrolled devices
+                   →  owner taps approve
+                   →  Home Assistant actuates
+```
+
+**Why this holds where spoken confirmation does not:** an attacker who can reach the model — via injected text in a camera frame, a poisoned document, a recording played through the door, or simply standing in the room and speaking — still cannot tap the owner's phone. The confirmation channel is outside everything the attack controls. A spoken PIN, by contrast, is audible to whoever is in the room and replayable.
+
+This costs one tap and preserves the interaction. The assistant still opens the garage when asked; the authority to actuate just never sits inside the model.
+
+**Additional guards on Tier 3**, all cheap and all worth having:
+
+| Guard | Rationale |
+|---|---|
+| **Clean context, including history** | No `UNTRUSTED` fragment anywhere in the conversation, not just the current turn. A camera description three turns back is still an injection vector |
+| **Identified speaker, elevated threshold** | Higher confidence than the `FR-1.6` general bar. `guest` can never stage a Tier-3 request |
+| **Interior satellites only** | A satellite audible from outside the house must not accept Tier-3 requests at all. Someone at the door can speak to your kitchen mic |
+| **Presence corroboration** | Optionally require an interior presence sensor to agree that someone is home |
+| **Notify on completion, always** | Even an approved action pushes a notification. A successful attack becomes immediately visible rather than silent |
+| **Rate limit + anomaly alert** | Repeated Tier-3 requests are a signal, whether or not any succeeded |
+
+### 5.4 The dial
+
+This is a risk-tolerance setting, not a fixed truth, and it is the owner's call. A ground-floor apartment in a dense city and a rural house with a long driveway have genuinely different threat models.
+
+| Posture | Tier 3 behaviour |
+|---|---|
+| Strict | Out-of-band confirmation always, as above |
+| Moderate | Out-of-band confirmation for unlock/disarm; garage open allowed on identified speaker + clean context alone |
+| Permissive | Identified speaker + clean context for everything; notification-only |
+
+**What should not be dialled away** regardless of posture: guest principals staging Tier-3 requests, exterior-audible satellites accepting them, and completion notifications. Those cost nothing and cover the attacks that don't require the attacker to be sophisticated.
+
+The design intent, restated: the worst outcome of a total prompt-injection compromise should be *a notification you decline*, not *a house that opened*.
 
 Rate limiting applies across all tiers — a loop that toggles a relay a thousand times is a hardware failure mode even when every individual call is authorized.
 
