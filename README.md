@@ -49,4 +49,10 @@ These are load-bearing. Changing one invalidates analysis elsewhere.
 
 ## License
 
-AGPL-3.0 (full text to be added).
+[AGPL-3.0](LICENSE).
+
+## A note on publishing
+
+This repo describes the design of a system that secures a home. That is deliberate — a security design that only works while secret is not a security design, and this one is meant to survive being read.
+
+What must never be committed here: real VLAN IDs, addresses, credentials, which rooms have satellites, or the chosen posture setting from `docs/SECURITY-MODEL.md §5.4`. Instance configuration belongs in a private repo. This one holds the design.
