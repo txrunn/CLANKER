@@ -107,7 +107,7 @@ That last one pages because it means either a bug in the enforcement path or an 
 
 ### 4.1 Pinning — `NFR-4.3`, `SEC-7`
 
-Models are pinned by **digest**, never tag. Container images likewise. A `models.lock` file in the repo records, for every model: source repository, revision hash, quantization method and provenance, file checksums, and the date it was promoted.
+Models are pinned by **digest**, never tag. Container images likewise. [`infra/catalog/models.yaml`](../infra/catalog/models.yaml) records, for every model: source repository, revision hash, format and provenance; [`infra/catalog/images.yaml`](../infra/catalog/images.yaml) records image digests; git history records when each was promoted. Terraform refuses to plan an unpinned entry. Rationale and procedure: [`MODEL-CATALOG.md`](MODEL-CATALOG.md).
 
 Quantization provenance matters more than it looks. "Qwen3-30B-A3B Q4" is not a specification — who quantized it, with what calibration data, in what format? Two files with the same name can differ measurably in quality. Record the exact artifact.
 
@@ -157,4 +157,6 @@ The insight worth internalizing: **the config and the memory are the project.** 
 
 ### 5.3 Runbooks to write
 
-Deferred until the corresponding component exists, but tracked here so they are not forgotten: satellite reflash, model rollback, Qdrant restore, full NUC rebuild, egress-hole audit, and rotating the cloud API key.
+Written for the compute host, in [`runbooks/`](runbooks/): [Spark bootstrap](runbooks/SPARK-BOOTSTRAP.md); [operations](runbooks/SPARK-OPERATIONS.md) covering model rollback, key rotation, Spark egress audit, drift, driver upgrade, and adding a project.
+
+Still deferred until the corresponding component exists: satellite reflash, Qdrant restore (beyond snapshotting), full NUC rebuild, gateway egress-hole audit, and rotating the cloud API key.

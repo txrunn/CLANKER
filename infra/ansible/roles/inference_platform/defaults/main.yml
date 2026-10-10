@@ -1,0 +1,9 @@
+---
+inference_platform_tenant: inference
+inference_platform_user: svc-inference
+inference_platform_home: /srv/inference
+inference_platform_secret_name: inference-api-key
+# Read from the operator's environment (.env), never from a file in the repo.
+inference_platform_api_key_env: CLANKER_INFERENCE_API_KEY
+# vLLM's default shared-memory segment is too small for MoE workers.
+inference_platform_shm_size: 16g

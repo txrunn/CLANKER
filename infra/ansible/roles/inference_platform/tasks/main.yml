@@ -1,0 +1,106 @@
+---
+# The inference tenant: one rootless vLLM process per enabled catalog model,
+# each a Quadlet-generated systemd user unit named inference-<key>.
+
+- name: Inference API key is present in the operator environment
+  ansible.builtin.assert:
+    that:
+      - lookup('ansible.builtin.env', inference_platform_api_key_env) | length >= 32
+    fail_msg: >-
+      {{ inference_platform_api_key_env }} is unset or shorter than 32 chars.
+      Run `just env` to generate .env, then re-run.
+    quiet: true
+
+- name: Manage svc-inference
+  become: true
+  become_user: "{{ inference_platform_user }}"
+  environment:
+    XDG_RUNTIME_DIR: "/run/user/{{ spark_tenants[inference_platform_tenant].uid }}"
+  block:
+    - name: Model, cache and config directories
+      ansible.builtin.file:
+        path: "{{ inference_platform_home }}/{{ item }}"
+        state: directory
+        mode: "0750"
+      loop: >-
+        {{ ['models', 'cache']
+           + (spark_models | map('regex_replace', '^', 'cache/') | list)
+           + (spark_models | map('regex_replace', '^(.*)$', 'cache/\1/home') | list) }}
+
+    - name: API key secret
+      ansible.builtin.include_tasks: secret.yml
+
+    - name: Preflight - images and weights were pulled
+      ansible.builtin.include_tasks: preflight.yml
+
+    - name: Quadlet unit per model
+      ansible.builtin.template:
+        src: vllm.container.j2
+        dest: "{{ inference_platform_home }}/.config/containers/systemd/inference-{{ item.key }}.container"
+        mode: "0640"
+      loop: "{{ spark_models | dict2items }}"
+      loop_control:
+        label: "{{ item.key }} -> {{ item.value.alias }} :{{ item.value.port }}"
+      register: inference_platform_units
+
+    - name: Find units no longer in the catalog
+      ansible.builtin.find:
+        paths: "{{ inference_platform_home }}/.config/containers/systemd"
+        patterns: "inference-*.container"
+      register: inference_platform_existing
+
+    - name: Stop removed models
+      ansible.builtin.systemd_service:
+        name: "{{ item.path | basename | regex_replace('\\.container$', '') }}"
+        scope: user
+        state: stopped
+      loop: "{{ inference_platform_existing.files | rejectattr('path', 'in', inference_platform_units.results | map(attribute='dest') | list) }}"
+      loop_control:
+        label: "{{ item.path | basename }}"
+      failed_when: false
+
+    - name: Delete removed units
+      ansible.builtin.file:
+        path: "{{ item.path }}"
+        state: absent
+      loop: "{{ inference_platform_existing.files | rejectattr('path', 'in', inference_platform_units.results | map(attribute='dest') | list) }}"
+      loop_control:
+        label: "{{ item.path | basename }}"
+
+    - name: Regenerate units from Quadlet files
+      ansible.builtin.systemd_service:
+        scope: user
+        daemon_reload: true
+
+    # try-restart restarts only units already running, so a changed on-demand
+    # model is not started as a side effect. The systemd module has no
+    # equivalent state.
+    - name: Restart running models whose definition changed # noqa: command-instead-of-module
+      ansible.builtin.command:
+        cmd: "systemctl --user try-restart inference-{{ item.item.key }}.service"
+      loop: "{{ inference_platform_units.results | selectattr('changed') }}"
+      loop_control:
+        label: "{{ item.item.key }}"
+      changed_when: true
+
+    - name: Start resident models
+      ansible.builtin.systemd_service:
+        name: "inference-{{ item.key }}.service"
+        scope: user
+        state: started
+      loop: "{{ spark_models | dict2items | selectattr('value.placement', 'equalto', 'resident') }}"
+      loop_control:
+        label: "{{ item.key }}"
+
+    - name: GPU smoke test inside a rootless container
+      ansible.builtin.command:
+        cmd: >-
+          podman run --rm --pull=never --device nvidia.com/gpu=all
+          --entrypoint nvidia-smi {{ spark_images.vllm }} -L
+        chdir: /
+      register: inference_platform_gpu
+      changed_when: false
+      failed_when: "'GPU 0' not in inference_platform_gpu.stdout"
+
+- name: Endpoint files for consuming tenants
+  ansible.builtin.include_tasks: consumers.yml

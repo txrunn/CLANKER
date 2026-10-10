@@ -1,0 +1,35 @@
+---
+# Converge the compute host to the declared state.
+#
+# Idempotent: a second run reports zero changes. `just drift` runs this in
+# --check --diff mode and fails if anything would change.
+#
+# Inputs (rendered by Terraform, see infra/terraform/modules/spark-host):
+#   -i infra/.generated/<env>/inventory.yml
+#   -e @infra/.generated/<env>/host_vars.json
+# Secrets come from the operator's environment (.env), never from files here.
+
+- name: Host baseline (root)
+  hosts: spark
+  become: true
+  roles:
+    - role: host_base
+      tags: [base]
+    - role: container_runtime
+      tags: [runtime]
+    - role: tenant
+      tags: [tenants]
+    - role: host_firewall
+      tags: [firewall]
+
+- name: Inference platform (svc-inference)
+  hosts: spark
+  roles:
+    - role: inference_platform
+      tags: [inference]
+
+- name: C.L.A.N.K.E.R. services (svc-clanker)
+  hosts: spark
+  roles:
+    - role: clanker_services
+      tags: [clanker]

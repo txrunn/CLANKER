@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+# tenantctl - operate a tenant's rootless services without logging in as it.
+#
+# Tenant accounts (svc-*) have no shell and no password. The admin manages
+# them through this wrapper, which drops to the tenant with runuser and points
+# systemctl/podman at the tenant's own user manager.
+#
+#   tenantctl <tenant> status              unit overview
+#   tenantctl <tenant> systemctl <args>    e.g. restart inference-llm-fast
+#   tenantctl <tenant> logs [unit] [args]  journal for the tenant (or one unit)
+#   tenantctl <tenant> podman <args>       e.g. ps, images
+#
+# Managed by Ansible (roles/host_base). Edits on the host are overwritten.
+set -euo pipefail
+
+usage() { sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'; exit 64; }
+
+[[ $# -ge 2 ]] || usage
+[[ $EUID -eq 0 ]] || exec sudo -- "$0" "$@"
+
+tenant=$1 cmd=$2
+shift 2
+[[ $tenant =~ ^[a-z][a-z0-9-]{1,20}$ ]] || { echo "bad tenant name: $tenant" >&2; exit 64; }
+user="svc-$tenant"
+uid=$(id -u "$user" 2>/dev/null) || { echo "no such tenant: $tenant" >&2; exit 67; }
+as_tenant=(runuser -u "$user" -- env "XDG_RUNTIME_DIR=/run/user/$uid" "HOME=$(getent passwd "$user" | cut -d: -f6)")
+
+case "$cmd" in
+  status)
+    exec "${as_tenant[@]}" systemctl --user list-units --all --no-pager "$tenant-*" ;;
+  systemctl)
+    exec "${as_tenant[@]}" systemctl --user "$@" ;;
+  podman)
+    cd /
+    exec "${as_tenant[@]}" podman "$@" ;;
+  logs)
+    if [[ $# -gt 0 && $1 != -* ]]; then
+      unit=$1; shift
+      exec journalctl --no-pager _UID="$uid" _SYSTEMD_USER_UNIT="$unit.service" "$@"
+    fi
+    exec journalctl --no-pager _UID="$uid" "$@" ;;
+  *) usage ;;
+esac

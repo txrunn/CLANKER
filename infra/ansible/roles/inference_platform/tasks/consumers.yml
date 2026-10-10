@@ -1,0 +1,30 @@
+---
+# Every tenant named in a model's `consumers` gets a private env file with the
+# endpoint URLs and API key, so its jobs never need the key from anywhere else.
+- name: Collect consuming tenants
+  ansible.builtin.set_fact:
+    inference_platform_consumers: >-
+      {{ spark_models.values() | map(attribute='consumers') | flatten | unique
+         | reject('equalto', inference_platform_tenant)
+         | select('in', spark_tenants.keys() | list) | list }}
+
+- name: Endpoint directory per consumer
+  become: true
+  ansible.builtin.file:
+    path: "/srv/{{ item }}/.config/inference"
+    state: directory
+    owner: "svc-{{ item }}"
+    group: "svc-{{ item }}"
+    mode: "0700"
+  loop: "{{ inference_platform_consumers }}"
+
+- name: Endpoint file per consumer
+  become: true
+  ansible.builtin.template:
+    src: endpoints.env.j2
+    dest: "/srv/{{ item }}/.config/inference/endpoints.env"
+    owner: "svc-{{ item }}"
+    group: "svc-{{ item }}"
+    mode: "0600"
+  loop: "{{ inference_platform_consumers }}"
+  no_log: true

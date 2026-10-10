@@ -260,6 +260,8 @@ Speaker identification is a biometric system operating on household members and 
 | **SEC-9** | Secrets via SOPS+age or Vault. No plaintext credentials in the repo, ever — this repo is intended to be public |
 | **SEC-10** | The four egress holes (`ARCHITECTURE.md §1`) are firewall rules with logging, reviewed on change |
 
+On the compute host, `SEC-7`–`SEC-10` are implemented in `infra/` (`INFRASTRUCTURE.md §5–§8`): digest/revision pinning enforced at plan time, API keys on every endpoint, secrets only in the operator's `.env` and Podman's secret store, and a per-project UID-keyed egress policy whose pull window logs every connection.
+
 ---
 
 ## 8. Residual risks

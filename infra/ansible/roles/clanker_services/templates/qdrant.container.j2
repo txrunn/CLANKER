@@ -1,0 +1,31 @@
+# {{ ansible_managed }}
+# Vector store for RAG (`docs`) and the memory subsystem (`memory`).
+# `memory` is irreplaceable (OPERATIONS.md §5.1): snapshots go to the NAS.
+
+[Unit]
+Description=C.L.A.N.K.E.R. Qdrant
+After=network-online.target
+Wants=network-online.target
+
+[Container]
+ContainerName=clanker-qdrant
+Image={{ spark_images.qdrant }}
+PublishPort={{ spark_clanker_ports.qdrant_http }}:6333
+PublishPort={{ spark_clanker_ports.qdrant_grpc }}:6334
+Volume={{ clanker_services_home }}/data/qdrant/storage:/qdrant/storage
+Volume={{ clanker_services_home }}/data/qdrant/snapshots:/qdrant/snapshots
+Secret={{ clanker_services_qdrant_secret }},type=env,target=QDRANT__SERVICE__API_KEY
+Environment=QDRANT__TELEMETRY_DISABLED=true
+Environment=QDRANT__LOG_LEVEL=INFO
+# Root filesystem stays writable: Qdrant writes an init marker in its workdir.
+NoNewPrivileges=true
+DropCapability=ALL
+PodmanArgs=--pull=never
+
+[Service]
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=60
+
+[Install]
+WantedBy=default.target

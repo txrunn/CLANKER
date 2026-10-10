@@ -1,0 +1,143 @@
+# C.L.A.N.K.E.R. model catalog: what the inference tenant serves on the Spark.
+# Models are chosen so other tenants on the same host (e.g. stratum) can call
+# these endpoints rather than load their own copy; 128 GB cannot hold two.
+# `consumers` records who calls an alias; it grants nothing by itself.
+# Rationale for every choice: docs/MODEL-CATALOG.md.
+#
+# Rules (enforced by Terraform preconditions, see modules/spark-host):
+#   - revision must be a pinned 40-hex commit (NFR-4.3). Run `just pin-models`.
+#   - ports are unique across the host.
+#   - sum(gpu_memory_utilization of resident) + max(on_demand) <= gpu_budget.
+#   - provenance.kind: derivative (abliterated, merges, community quants) may
+#     not be enabled until provenance.evaluation points at a passed eval report.
+#
+# gpu_memory_utilization is a fraction of GB10 unified memory (~119 GiB visible
+# to CUDA). It covers weights + KV cache + activations for that one process.
+# Figures marked [verify] are estimates until measured on hardware.
+
+schema_version: 1
+gpu_budget: 0.92 # leaves ~9-10 GiB for DGX OS, Qdrant, STT and other tenants
+
+defaults:
+  image: vllm
+  # Every generative endpoint uses priority scheduling so voice turns
+  # (priority 0) preempt batch work (priority 10+). See MODEL-CATALOG.md §4.
+  common_args:
+    - --enable-prefix-caching
+    - --scheduling-policy=priority
+
+models:
+  # --- Generative -----------------------------------------------------------
+
+  llm-fast:
+    alias: local/fast
+    repo: nvidia/Qwen3.6-35B-A3B-NVFP4
+    revision: null
+    format: NVFP4 (ModelOpt static), ~23.4 GB
+    provenance: { kind: upstream, publisher: NVIDIA (quantization of Qwen/Qwen3.6-35B-A3B) }
+    placement: resident
+    port: 8000
+    gpu_memory_utilization: 0.24 # [verify]
+    enabled: true
+    consumers: [clanker, stratum]
+    args:
+      - --quantization=modelopt
+      - --max-model-len=32768
+      - --max-num-seqs=8
+      - --max-num-batched-tokens=4096 # required on this checkpoint; launch asserts otherwise
+      - --kv-cache-dtype=fp8
+      - --reasoning-parser=qwen3
+      - --enable-auto-tool-choice
+      - --tool-call-parser=hermes # [verify] against Qwen3.6 chat template
+      - '--speculative-config={"method":"mtp","num_speculative_tokens":2}'
+
+  llm-fast-fallback:
+    alias: local/fast
+    repo: Qwen/Qwen3-30B-A3B-Instruct-2507-FP8
+    revision: null
+    format: FP8 block-128, ~31 GB
+    provenance: { kind: upstream, publisher: Qwen }
+    placement: resident
+    port: 8000
+    gpu_memory_utilization: 0.30 # [verify]
+    enabled: false # the previously locked fast tier; swap in if llm-fast fails acceptance
+    consumers: [clanker, stratum]
+    args:
+      - --max-model-len=32768
+      - --max-num-seqs=8
+      - --kv-cache-dtype=fp8
+      - --enable-auto-tool-choice
+      - --tool-call-parser=hermes
+
+  llm-deep:
+    alias: local/deep
+    repo: openai/gpt-oss-120b
+    revision: null
+    format: MXFP4 MoE weights + BF16 attention, ~63 GB
+    provenance: { kind: upstream, publisher: OpenAI }
+    placement: on_demand # start/stop with `just model up|down llm-deep`
+    port: 8001
+    gpu_memory_utilization: 0.52 # [verify]
+    enabled: true
+    consumers: [clanker, stratum]
+    args:
+      - --max-model-len=32768
+      - --max-num-seqs=8
+      - --enable-auto-tool-choice
+      - --tool-call-parser=openai
+      - --reasoning-parser=openai_gptoss # [verify] parser name on the pinned vLLM
+
+  # --- Perception -------------------------------------------------------------
+
+  vlm:
+    alias: local/vision
+    repo: Qwen/Qwen3-VL-8B-Instruct-FP8 # [verify] repo id before first pin
+    revision: null
+    format: FP8, ~10 GB
+    provenance: { kind: upstream, publisher: Qwen }
+    placement: resident # cameras matter at 3 a.m. too
+    port: 8002
+    gpu_memory_utilization: 0.10 # [verify]
+    enabled: true
+    consumers: [clanker]
+    args:
+      - --max-model-len=16384
+      - --max-num-seqs=4
+      - '--limit-mm-per-prompt={"image":1,"video":0}'
+
+  # --- Retrieval --------------------------------------------------------------
+
+  embed:
+    alias: local/embed
+    repo: BAAI/bge-m3
+    revision: null
+    format: FP16 dense, ~2.3 GB
+    provenance: { kind: upstream, publisher: BAAI }
+    placement: resident
+    port: 8003
+    gpu_memory_utilization: 0.03
+    enabled: true
+    consumers: [clanker, stratum]
+    args:
+      - --runner=pooling
+      - --max-model-len=8192
+
+  rerank:
+    alias: local/rerank
+    repo: BAAI/bge-reranker-v2-m3
+    revision: null
+    format: FP16 cross-encoder, ~2.3 GB
+    provenance: { kind: upstream, publisher: BAAI }
+    placement: resident
+    port: 8004
+    gpu_memory_utilization: 0.03
+    enabled: true
+    consumers: [clanker, stratum]
+    args:
+      - --runner=pooling
+      - --max-model-len=8192
+
+  # --- Derivatives (abliterated / refusal-removed) ---------------------------
+  # Allowed, never default. Add as a separate key with its own alias
+  # (e.g. local/deep-abliterated) and port, kind: derivative, enabled: false.
+  # Policy and evaluation gate: docs/MODEL-CATALOG.md §5.

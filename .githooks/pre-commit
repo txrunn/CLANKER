@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# Block instance data and secrets from ever being committed (repo is public).
+# Enabled by `just bootstrap` (git config core.hooksPath .githooks).
+set -euo pipefail
+
+blocked='(^|/)\.env$|^infra/\.generated/|\.tfstate(\.backup)?$|(^|/)tfplan$|\.terraform/|\.pem$|\.key$'
+if staged=$(git diff --cached --name-only --diff-filter=ACMR | grep -E "$blocked"); then
+  echo "pre-commit: refusing to commit instance data or secrets:" >&2
+  awk '{print "  " $0}' <<<"$staged" >&2
+  exit 1
+fi
+
+if command -v gitleaks >/dev/null 2>&1 || [[ -x bin/gitleaks ]]; then
+  "$(command -v gitleaks || echo bin/gitleaks)" protect --staged --no-banner --redact
+fi

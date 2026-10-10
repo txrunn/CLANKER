@@ -1,0 +1,82 @@
+---
+# Runs only inside the pull window (playbooks/pull.yml). Fetches the pinned
+# vLLM image and each enabled model at its pinned revision, as svc-inference.
+#
+# Weights land in /srv/inference/models/<key>/<revision>/. A `.complete`
+# marker is written only after the download exits cleanly; the service
+# preflight refuses to start a model without it. Old revisions are kept for
+# rollback (OPERATIONS.md §4.2) until removed with `just prune-models`.
+
+- name: Fetch as svc-inference
+  become: true
+  become_user: svc-inference
+  environment:
+    XDG_RUNTIME_DIR: "/run/user/{{ spark_tenants.inference.uid }}"
+  block:
+    - name: Check for the pinned vLLM image
+      ansible.builtin.command:
+        cmd: "podman image exists {{ spark_images.vllm }}"
+        chdir: /
+      register: model_store_image
+      changed_when: false
+      failed_when: false
+
+    - name: Pull the pinned vLLM image
+      when: model_store_image.rc != 0
+      ansible.builtin.command:
+        cmd: "podman pull --quiet {{ spark_images.vllm }}"
+        chdir: /
+      changed_when: true
+
+    - name: Check which revisions are already complete
+      ansible.builtin.stat:
+        path: "/srv/inference/models/{{ item.key }}/{{ item.value.revision }}/.complete"
+      loop: "{{ spark_models | dict2items }}"
+      loop_control:
+        label: "{{ item.key }}@{{ item.value.revision[:12] }}"
+      register: model_store_present
+
+    - name: Revision directories
+      ansible.builtin.file:
+        path: "/srv/inference/models/{{ item.item.key }}/{{ item.item.value.revision }}"
+        state: directory
+        mode: "0750"
+      loop: "{{ model_store_present.results | rejectattr('stat.exists') }}"
+      loop_control:
+        label: "{{ item.item.key }}"
+
+    - name: Download pinned revisions (hf CLI inside the pinned vLLM image)
+      ansible.builtin.command:
+        argv:
+          - podman
+          - run
+          - --rm
+          - --pull=never
+          - --entrypoint=hf
+          - --env=HF_HUB_DISABLE_TELEMETRY=1
+          - --env=HF_TOKEN
+          - "--volume=/srv/inference/models/{{ item.item.key }}/{{ item.item.value.revision }}:/dl"
+          - "{{ spark_images.vllm }}"
+          - download
+          - "{{ item.item.value.repo }}"
+          - "--revision={{ item.item.value.revision }}"
+          - --local-dir=/dl
+        chdir: /
+      environment:
+        HF_TOKEN: "{{ lookup('ansible.builtin.env', 'HF_TOKEN') }}"
+      loop: "{{ model_store_present.results | rejectattr('stat.exists') }}"
+      loop_control:
+        label: "{{ item.item.key }} <- {{ item.item.value.repo }}@{{ item.item.value.revision[:12] }}"
+      changed_when: true
+
+    - name: Mark complete
+      ansible.builtin.copy:
+        dest: "/srv/inference/models/{{ item.item.key }}/{{ item.item.value.revision }}/.complete"
+        mode: "0640"
+        content: |
+          repo={{ item.item.value.repo }}
+          revision={{ item.item.value.revision }}
+          image={{ spark_images.vllm }}
+      loop: "{{ model_store_present.results | rejectattr('stat.exists') }}"
+      loop_control:
+        label: "{{ item.item.key }}"

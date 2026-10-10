@@ -1,0 +1,11 @@
+---
+- name: Restart qdrant
+  become: true
+  become_user: "{{ clanker_services_user }}"
+  environment:
+    XDG_RUNTIME_DIR: "/run/user/{{ spark_tenants.clanker.uid }}"
+  ansible.builtin.systemd_service:
+    name: clanker-qdrant.service
+    scope: user
+    state: restarted
+    daemon_reload: true

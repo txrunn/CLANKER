@@ -161,18 +161,20 @@ Measured as **Time-To-Response (TTR)**: end of user speech → first audio sampl
 
 ### 4.1 Compute tier (Spark)
 
+Implemented as code in `infra/` (`INFRASTRUCTURE.md`). The served models, their memory shares, and the caller contract are maintained in `MODEL-CATALOG.md`, which takes precedence over the model rows below if they ever disagree.
+
 | Component | Implementation | Interface | Notes |
 |---|---|---|---|
-| Container runtime | Docker + NVIDIA Container Toolkit | — | aarch64 images required throughout |
+| Container runtime | **Rootless Podman** + NVIDIA CDI, one account per project | — | aarch64 images, digest-pinned. No root daemon; see `INFRASTRUCTURE.md §6` |
 | LLM serving | **vLLM** (default) or **SGLang** — decision in §4.4 | OpenAI-compatible HTTP `:8000` | Not Ollama. The SLOs require scheduling control it does not have — see §4.4 |
-| Fast LLM | Qwen3-30B-A3B (MoE, ~3.3 B active), Q4 | model name `local/fast` | Voice default |
+| Fast LLM | Qwen3.6-35B-A3B (MoE, ~3 B active), NVFP4 | model name `local/fast` | Voice default; Qwen3-30B-A3B FP8 pinned as fallback. Rationale: `MODEL-CATALOG.md §3` |
 | Deep LLM | gpt-oss-120b MXFP4 (MoE, ~5.1 B active) | `local/deep` | Explicit escalation only |
-| VLM | Qwen2.5-VL 7B | `local/vision` | 7B chosen to preserve training headroom — `NFR-3.2` |
+| VLM | Qwen3-VL 8B, FP8 | `local/vision` | Small to preserve training headroom — `NFR-3.2` |
 | STT | faster-whisper `large-v3-turbo`, GPU | Wyoming `:10300` | On GPU, not NUC CPU; this is worth ~1 s of TTR |
 | TTS | Piper → Kokoro | Wyoming `:10200` | Must support streaming/chunked output for `FR-1.8` |
-| Embeddings | bge-m3 | via Ollama | Shared by RAG and memory |
+| Embeddings | bge-m3 | vLLM pooling runner, `local/embed` | Shared by RAG and memory |
 | Vector DB | Qdrant | gRPC/HTTP `:6333` | Collections: `docs`, `memory` |
-| Reranker | bge-reranker-v2-m3 | — | Optional; improves memory precision at ~30 ms cost |
+| Reranker | bge-reranker-v2-m3 | vLLM `/v1/rerank`, `local/rerank` | Optional; improves memory precision at ~30 ms cost |
 | Training | HF `peft` + `trl`, LoRA/QLoRA | scheduled job | Off-peak only, admission-controlled |
 
 ### 4.2 Orchestration tier (NUC)

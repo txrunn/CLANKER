@@ -1,0 +1,56 @@
+---
+# Per-tenant network policy, as its own nftables table.
+#
+# It never flushes the ruleset: DGX OS components and other tools keep their
+# own tables. Replacing this one table is atomic (delete + define in one file).
+
+- name: Policy directory
+  ansible.builtin.file:
+    path: /etc/nftables.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Render tenant policy
+  ansible.builtin.template:
+    src: spark-tenant-policy.nft.j2
+    dest: /etc/nftables.d/spark-tenant-policy.nft
+    owner: root
+    group: root
+    mode: "0640"
+    validate: nft -c -f %s
+  notify: Apply tenant policy
+
+- name: Unit that loads the policy at boot
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/spark-tenant-policy.service
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      # {{ ansible_managed }}
+      [Unit]
+      Description=Spark per-tenant network policy (nftables table inet spark_tenant_policy)
+      Documentation=file:///etc/nftables.d/spark-tenant-policy.nft
+      DefaultDependencies=no
+      Before=network-pre.target user.slice
+      Wants=network-pre.target
+
+      [Service]
+      Type=oneshot
+      RemainAfterExit=yes
+      ExecStart=/usr/sbin/nft -f /etc/nftables.d/spark-tenant-policy.nft
+      ExecReload=/usr/sbin/nft -f /etc/nftables.d/spark-tenant-policy.nft
+      ExecStop=/usr/sbin/nft delete table inet spark_tenant_policy
+
+      [Install]
+      WantedBy=multi-user.target
+  notify: Apply tenant policy
+
+- name: Enable the policy unit
+  ansible.builtin.systemd_service:
+    name: spark-tenant-policy.service
+    enabled: true
+    state: started
+    daemon_reload: true

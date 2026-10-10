@@ -1,0 +1,87 @@
+---
+- name: "Variables - {{ tenant_item.key }}"
+  ansible.builtin.set_fact:
+    tenant_name: "svc-{{ tenant_item.key }}"
+    tenant_uid: "{{ tenant_item.value.uid }}"
+    tenant_home: "/srv/{{ tenant_item.key }}"
+    tenant_subid_start: "{{ tenant_item.value.uid | int * 65536 }}"
+
+- name: "Group - {{ tenant_item.key }}"
+  ansible.builtin.group:
+    name: "{{ tenant_name }}"
+    gid: "{{ tenant_uid }}"
+
+- name: "Account (no shell, locked password) - {{ tenant_item.key }}"
+  ansible.builtin.user:
+    name: "{{ tenant_name }}"
+    uid: "{{ tenant_uid }}"
+    group: "{{ tenant_name }}"
+    groups: []
+    home: "{{ tenant_home }}"
+    create_home: true
+    shell: /usr/sbin/nologin
+    password: "!"
+    password_lock: true
+    comment: "{{ tenant_item.value.description | trim | truncate(60) }}"
+
+- name: "Home is private - {{ tenant_item.key }}"
+  ansible.builtin.file:
+    path: "{{ tenant_home }}"
+    state: directory
+    owner: "{{ tenant_name }}"
+    group: "{{ tenant_name }}"
+    mode: "0750"
+
+- name: "Subordinate ID ranges - {{ tenant_item.key }}"
+  ansible.builtin.lineinfile:
+    path: "/etc/{{ item }}"
+    regexp: "^{{ tenant_name }}:"
+    line: "{{ tenant_name }}:{{ tenant_subid_start }}:65536"
+    create: true
+    owner: root
+    group: root
+    mode: "0644"
+  loop: [subuid, subgid]
+  notify: Migrate podman storage
+
+- name: "Ensure slice drop-in dir - {{ tenant_item.key }}"
+  ansible.builtin.file:
+    path: "/etc/systemd/system/user-{{ tenant_uid }}.slice.d"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: "CPU and IO weight - {{ tenant_item.key }}"
+  ansible.builtin.template:
+    src: user-slice.conf.j2
+    dest: "/etc/systemd/system/user-{{ tenant_uid }}.slice.d/50-tenant.conf"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Reload systemd
+
+- name: "Linger (services run without a login) - {{ tenant_item.key }}"
+  ansible.builtin.command:
+    cmd: "loginctl enable-linger {{ tenant_name }}"
+    creates: "/var/lib/systemd/linger/{{ tenant_name }}"
+
+- name: "User manager running - {{ tenant_item.key }}"
+  ansible.builtin.systemd_service:
+    name: "user@{{ tenant_uid }}.service"
+    state: started
+
+- name: "Standard tree - {{ tenant_item.key }}"
+  ansible.builtin.file:
+    path: "{{ tenant_home }}/{{ item }}"
+    state: directory
+    owner: "{{ tenant_name }}"
+    group: "{{ tenant_name }}"
+    mode: "0750"
+  loop:
+    - .config
+    - .config/containers
+    - .config/containers/systemd # Quadlet units
+    - .config/systemd
+    - .config/systemd/user
+    - data

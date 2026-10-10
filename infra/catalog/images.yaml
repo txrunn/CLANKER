@@ -1,0 +1,19 @@
+# Container images, pinned by digest (NFR-4.3, SEC-7).
+#
+# `tag` is what a human reads; `digest` is what the host runs. Services are
+# started with --pull=never, so a host can only run what `just pull` fetched
+# while the egress window was open. Fill digests with `just pin-images`
+# (resolves the linux/arm64 manifest for each tag).
+
+schema_version: 1
+
+images:
+  vllm:
+    repository: docker.io/vllm/vllm-openai
+    tag: v0.31.0-aarch64 # [verify] tag naming; v0.25.0-aarch64 is confirmed on GB10
+    digest: null
+
+  qdrant:
+    repository: docker.io/qdrant/qdrant
+    tag: v1.19.2
+    digest: null

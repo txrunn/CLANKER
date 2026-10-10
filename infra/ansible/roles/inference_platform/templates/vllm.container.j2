@@ -1,0 +1,67 @@
+# {{ ansible_managed }}
+# Source of truth: infra/catalog/models.yaml -> models.{{ item.key }}
+# Generated into systemd user unit inference-{{ item.key }}.service by Quadlet.
+{% set m = item.value %}
+{% set model_dir = '/models/' ~ item.key ~ '/' ~ m.revision %}
+
+[Unit]
+Description=vLLM {{ m.alias }} - {{ m.repo }}@{{ m.revision[:12] }}
+Documentation=https://github.com/txrunn/CLANKER/blob/main/docs/MODEL-CATALOG.md
+After=network-online.target
+Wants=network-online.target
+
+[Container]
+ContainerName=inference-{{ item.key }}
+Image={{ spark_images.vllm }}
+AddDevice=nvidia.com/gpu=all
+PublishPort={{ m.port }}:8000
+# Weights are read-only and mounted at a path that embeds the revision, so
+# GET /v1/models reports exactly which commit is serving (`root`).
+Volume={{ inference_platform_home }}/models/{{ item.key }}/{{ m.revision }}:{{ model_dir }}:ro
+# Persistent JIT/compile caches: restarts skip minutes of kernel compilation.
+Volume={{ inference_platform_home }}/cache/{{ item.key }}:/cache
+Environment=HOME=/cache/home
+Environment=XDG_CACHE_HOME=/cache
+Environment=XDG_CONFIG_HOME=/cache/config
+Environment=VLLM_CACHE_ROOT=/cache/vllm
+Environment=TRITON_CACHE_DIR=/cache/triton
+Environment=TORCHINDUCTOR_CACHE_DIR=/cache/torchinductor
+Environment=FLASHINFER_WORKSPACE_BASE=/cache
+# Offline by construction; the firewall enforces it, this keeps logs quiet.
+Environment=HF_HUB_OFFLINE=1
+Environment=TRANSFORMERS_OFFLINE=1
+Environment=VLLM_NO_USAGE_STATS=1
+Environment=DO_NOT_TRACK=1
+Secret={{ inference_platform_secret_name }},type=env,target=VLLM_API_KEY
+{% if m.read_only | default(true) %}
+ReadOnly=true
+Tmpfs=/tmp
+{% endif %}
+NoNewPrivileges=true
+DropCapability=ALL
+PodmanArgs=--pull=never --shm-size={{ inference_platform_shm_size }}
+Exec={{ model_dir }} \
+  --served-model-name={{ m.alias }} \
+  --host=0.0.0.0 \
+  --port=8000 \
+  --gpu-memory-utilization={{ m.gpu_memory_utilization }}{% for a in m.args %} \
+  '{{ a }}'{% endfor %}
+
+HealthCmd=python3 -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=5)"
+HealthInterval=30s
+HealthStartPeriod=20m
+HealthRetries=3
+
+[Service]
+Restart=on-failure
+RestartSec=30
+# First start compiles kernels and loads tens of GB from disk.
+TimeoutStartSec=1800
+TimeoutStopSec=120
+{% if m.placement == 'resident' %}
+
+[Install]
+WantedBy=default.target
+{% else %}
+# On-demand: no [Install]. Start with `just model up {{ item.key }}`.
+{% endif %}

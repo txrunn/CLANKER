@@ -1,0 +1,19 @@
+[project]
+name = "clanker-ops"
+version = "0.1.0"
+description = "Operator tooling for C.L.A.N.K.E.R. infrastructure (not a runtime package)"
+requires-python = ">=3.12,<3.14"
+license = "AGPL-3.0-only"
+dependencies = [
+  "ansible-core==2.21.5",
+]
+
+[dependency-groups]
+lint = [
+  "ansible-lint==26.9.0",
+  "yamllint==1.38.0",
+]
+
+[tool.uv]
+package = false
+default-groups = ["lint"]

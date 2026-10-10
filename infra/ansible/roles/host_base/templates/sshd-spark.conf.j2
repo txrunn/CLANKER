@@ -1,0 +1,7 @@
+# {{ ansible_managed }}
+# Key-only login. Tenant accounts have nologin shells and locked passwords, so
+# only the admin can log in at all.
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+PermitRootLogin no
+AllowUsers {{ spark_admin_user }}

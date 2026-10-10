@@ -1,0 +1,8 @@
+---
+# One dedicated account per project (tenant). See infra/catalog/tenants.yaml.
+- name: Provision tenant accounts
+  ansible.builtin.include_tasks: account.yml
+  loop: "{{ spark_tenants | dict2items }}"
+  loop_control:
+    loop_var: tenant_item
+    label: "svc-{{ tenant_item.key }}"

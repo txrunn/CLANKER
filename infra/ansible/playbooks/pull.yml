@@ -1,0 +1,43 @@
+---
+# Fetch pinned container images and model weights.
+#
+# This is WAN exception #4 ("manual model pulls", ARCHITECTURE.md §1) made
+# explicit: it opens HTTPS egress for the tenant UIDs that pull, using an
+# nftables set element with a timeout, and closes it when done. If the run
+# dies halfway, the `always` block closes it; if the controller dies, the
+# element's timeout closes it anyway.
+
+- name: Pull pinned images and weights
+  hosts: spark
+  vars:
+    spark_pull_tenants: [inference, clanker]
+  tasks:
+    - name: Pull inside an egress window
+      block:
+        - name: Open HTTPS egress for pulling tenants
+          become: true
+          ansible.builtin.command:
+            cmd: >-
+              nft add element inet spark_tenant_policy pull_{{ item }}
+              { 443 timeout {{ spark_pull_window_minutes }}m }
+          loop: "{{ spark_pull_tenants }}"
+          changed_when: true
+
+        - name: Inference images and weights
+          ansible.builtin.include_role:
+            name: model_store
+
+        - name: C.L.A.N.K.E.R. images
+          ansible.builtin.include_role:
+            name: clanker_services
+            tasks_from: pull
+
+      always:
+        - name: Close HTTPS egress
+          become: true
+          ansible.builtin.command:
+            cmd: nft delete element inet spark_tenant_policy pull_{{ item }} { 443 }
+          loop: "{{ spark_pull_tenants }}"
+          register: spark_pull_close
+          changed_when: spark_pull_close.rc == 0
+          failed_when: false # already expired is fine

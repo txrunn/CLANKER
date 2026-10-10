@@ -1,0 +1,11 @@
+# Rendered by Terraform (modules/spark-host). Do not edit; do not commit.
+all:
+  children:
+    spark:
+      hosts:
+        spark:
+          ansible_host: ${spark_host}
+          ansible_port: ${ssh_port}
+          ansible_user: ${admin_user}
+      vars:
+        spark_environment: ${environment}

@@ -1,0 +1,83 @@
+---
+# C.L.A.N.K.E.R. services that live on the compute tier (SYSTEM-SPEC §4.1).
+# Today: Qdrant (collections `docs`, `memory`). The memory service and GPU STT
+# join here as they are built.
+
+- name: Qdrant API key is present in the operator environment
+  ansible.builtin.assert:
+    that:
+      - lookup('ansible.builtin.env', clanker_services_qdrant_key_env) | length >= 32
+    fail_msg: "{{ clanker_services_qdrant_key_env }} is unset or shorter than 32 chars. Run `just env`."
+    quiet: true
+
+- name: Manage svc-clanker
+  become: true
+  become_user: "{{ clanker_services_user }}"
+  environment:
+    XDG_RUNTIME_DIR: "/run/user/{{ spark_tenants.clanker.uid }}"
+  block:
+    - name: Qdrant storage and snapshot directories
+      ansible.builtin.file:
+        path: "{{ clanker_services_home }}/data/qdrant/{{ item }}"
+        state: directory
+        mode: "0750"
+      loop: [storage, snapshots]
+
+    - name: Qdrant image is present
+      ansible.builtin.command:
+        cmd: "podman image exists {{ spark_images.qdrant }}"
+        chdir: /
+      register: clanker_services_image
+      changed_when: false
+      failed_when: false
+
+    - name: Stop if the image was never pulled
+      ansible.builtin.assert:
+        that: clanker_services_image.rc == 0
+        fail_msg: "Image {{ spark_images.qdrant }} missing. Run `just pull`."
+        quiet: true
+
+    - name: Hash the Qdrant key
+      ansible.builtin.set_fact:
+        clanker_services_key_sha: "{{ lookup('ansible.builtin.env', clanker_services_qdrant_key_env) | hash('sha256') }}"
+      no_log: true
+
+    - name: Read the stored secret's hash
+      ansible.builtin.command:
+        cmd: podman secret inspect --format '{{ '{{' }} index .Spec.Labels "sha256" {{ '}}' }}' {{ clanker_services_qdrant_secret }}
+        chdir: /
+      register: clanker_services_secret_label
+      changed_when: false
+      failed_when: false
+
+    - name: Create or rotate the Qdrant secret
+      when: clanker_services_secret_label.stdout | trim != clanker_services_key_sha
+      ansible.builtin.command:
+        cmd: >-
+          podman secret create --replace
+          --label sha256={{ clanker_services_key_sha }}
+          {{ clanker_services_qdrant_secret }} -
+        stdin: "{{ lookup('ansible.builtin.env', clanker_services_qdrant_key_env) }}"
+        stdin_add_newline: false
+        chdir: /
+      no_log: true
+      changed_when: true
+      notify: Restart qdrant
+
+    - name: Qdrant unit
+      ansible.builtin.template:
+        src: qdrant.container.j2
+        dest: "{{ clanker_services_home }}/.config/containers/systemd/clanker-qdrant.container"
+        mode: "0640"
+      notify: Restart qdrant
+
+    - name: Regenerate units from Quadlet files
+      ansible.builtin.systemd_service:
+        scope: user
+        daemon_reload: true
+
+    - name: Start Qdrant
+      ansible.builtin.systemd_service:
+        name: clanker-qdrant.service
+        scope: user
+        state: started

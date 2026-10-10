@@ -1,0 +1,28 @@
+---
+# Overridable through host_vars.json (rendered by Terraform).
+
+# Disable SSH password login. Only applied after confirming the admin user
+# has at least one authorized key, so it cannot lock you out.
+host_base_harden_sshd: "{{ spark_harden_sshd | default(true) }}"
+
+# Hold the NVIDIA driver and container toolkit at their installed versions so
+# a routine `apt upgrade` cannot change the CUDA stack under pinned images.
+# Upgrade deliberately: docs/runbooks/SPARK-OPERATIONS.md#driver-upgrade
+host_base_hold_nvidia_packages: "{{ spark_hold_nvidia_packages | default(true) }}"
+host_base_nvidia_hold_patterns:
+  - ^nvidia-driver-
+  - ^nvidia-kernel-
+  - ^nvidia-dkms-
+  - ^libnvidia-compute-
+  - ^nvidia-container-toolkit
+  - ^libnvidia-container
+
+host_base_packages:
+  - podman
+  - uidmap
+  - passt # pasta: rootless networking that preserves the tenant UID for egress policy
+  - crun
+  - dbus-user-session # systemd user managers for lingering tenants
+  - nftables
+  - acl
+  - jq

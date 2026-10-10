@@ -1,0 +1,84 @@
+---
+- name: Assert this is a GB10-class DGX host
+  ansible.builtin.assert:
+    that:
+      - ansible_facts.distribution == "Ubuntu"
+      - ansible_facts.architecture == "aarch64"
+    fail_msg: >-
+      Expected DGX OS (Ubuntu-based, aarch64). Found
+      {{ ansible_facts.distribution }} {{ ansible_facts.architecture }}.
+    quiet: true
+
+- name: Check the NVIDIA driver is present
+  ansible.builtin.command: nvidia-smi --query-gpu=name,driver_version --format=csv,noheader
+  register: host_base_nvidia_smi
+  changed_when: false
+
+- name: Report GPU
+  ansible.builtin.debug:
+    msg: "GPU: {{ host_base_nvidia_smi.stdout }}"
+
+- name: Check the NVIDIA Container Toolkit is present
+  ansible.builtin.command: nvidia-ctk --version
+  changed_when: false
+
+- name: Install runtime packages
+  ansible.builtin.apt:
+    name: "{{ host_base_packages }}"
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Hold NVIDIA packages
+  when: host_base_hold_nvidia_packages | bool
+  block:
+    - name: List installed NVIDIA packages
+      ansible.builtin.shell: >-
+        set -o pipefail;
+        dpkg-query -W -f='${Package}\n' |
+        grep -E '{{ host_base_nvidia_hold_patterns | join("|") }}' || true
+      args:
+        executable: /bin/bash
+      register: host_base_nvidia_pkgs
+      changed_when: false
+
+    - name: Mark them held
+      ansible.builtin.dpkg_selections:
+        name: "{{ item }}"
+        selection: hold
+      loop: "{{ host_base_nvidia_pkgs.stdout_lines }}"
+
+- name: Harden sshd
+  when: host_base_harden_sshd | bool
+  block:
+    - name: Read the admin user's authorized keys
+      ansible.builtin.stat:
+        path: "~{{ spark_admin_user }}/.ssh/authorized_keys"
+      register: host_base_admin_keys
+
+    - name: Refuse to disable passwords without a key on file
+      ansible.builtin.assert:
+        that: host_base_admin_keys.stat.exists and host_base_admin_keys.stat.size > 0
+        fail_msg: >-
+          {{ spark_admin_user }} has no ~/.ssh/authorized_keys. Run
+          `ssh-copy-id {{ spark_admin_user }}@<host>` first, or set
+          spark_harden_sshd=false.
+        quiet: true
+
+    - name: Install sshd drop-in
+      ansible.builtin.template:
+        src: sshd-spark.conf.j2
+        dest: /etc/ssh/sshd_config.d/50-spark.conf
+        owner: root
+        group: root
+        mode: "0644"
+        validate: /usr/sbin/sshd -t -f %s
+      notify: Reload sshd
+
+- name: Install tenantctl
+  ansible.builtin.copy:
+    src: tenantctl
+    dest: /usr/local/sbin/tenantctl
+    owner: root
+    group: root
+    mode: "0755"

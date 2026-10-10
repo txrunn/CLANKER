@@ -1,0 +1,55 @@
+---
+# Rootless Podman with GPU access through CDI (Container Device Interface).
+# No root daemon exists; each tenant runs its own containers as itself.
+
+- name: Look for an existing CDI spec
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  loop:
+    - /etc/cdi/nvidia.yaml
+    - /var/run/cdi/nvidia.yaml
+  register: container_runtime_cdi
+
+- name: Generate the NVIDIA CDI spec
+  when: container_runtime_cdi.results | selectattr('stat.exists') | list | length == 0
+  ansible.builtin.command:
+    cmd: nvidia-ctk cdi generate --output=/etc/cdi/nvidia.yaml
+    creates: /etc/cdi/nvidia.yaml
+
+- name: Confirm the GPU device is advertised
+  ansible.builtin.command: nvidia-ctk cdi list
+  register: container_runtime_cdi_list
+  changed_when: false
+  failed_when: "'nvidia.com/gpu=all' not in container_runtime_cdi_list.stdout"
+
+- name: Ensure containers drop-in directories exist
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  loop:
+    - /etc/containers/registries.conf.d
+    - /etc/containers/containers.conf.d
+
+- name: Require fully qualified image names
+  ansible.builtin.copy:
+    dest: /etc/containers/registries.conf.d/50-spark.conf
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      # {{ ansible_managed }}
+      # Short names ("vllm-openai") are ambiguous and a supply-chain risk.
+      # Every image in infra/catalog/images.yaml is fully qualified and digest-pinned.
+      unqualified-search-registries = []
+      short-name-mode = "enforcing"
+
+- name: Default containers.conf for all tenants
+  ansible.builtin.template:
+    src: containers.conf.j2
+    dest: /etc/containers/containers.conf.d/50-spark.conf
+    owner: root
+    group: root
+    mode: "0644"

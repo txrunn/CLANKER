@@ -1,0 +1,10 @@
+---
+galaxy_info:
+  author: txrunn
+  description: C.L.A.N.K.E.R. compute host - inference_platform
+  license: AGPL-3.0-only
+  min_ansible_version: "2.19"
+  platforms:
+    - name: Ubuntu
+      versions: [noble]
+dependencies: []

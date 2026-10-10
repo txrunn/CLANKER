@@ -72,8 +72,8 @@ Runs Home Assistant, LiteLLM, Firefly III, Ghostfolio, and (for the separate tra
 
 | Role | Choice | Rationale |
 |---|---|---|
-| Primary LLM | **Qwen3-30B-A3B** (MoE) | ~3B active params/token → near-frontier quality at fast token rates on limited bandwidth |
-| Vision | **Qwen2.5-VL** (7B/32B) or **Gemma 3 27B** | Gemma 3 is natively multimodal and could serve as LLM + VLM in one deployment |
+| Primary LLM | **Qwen3.6-35B-A3B** (MoE, NVFP4) *(amended §14)* | ~3B active params/token → near-frontier quality at fast token rates on limited bandwidth |
+| Vision | **Qwen3-VL 8B** (FP8) *(amended §14)* | Small to preserve training headroom (§13.2) |
 | STT | **faster-whisper large-v3-turbo** via Wyoming | **Runs on the Spark GPU** — sub-second. The same model on NUC CPU adds seconds per utterance |
 | TTS | **Piper** | Light enough to live anywhere |
 | Embeddings | **bge-m3** (served alongside the LLM) | Shared by RAG and the memory subsystem |
@@ -168,8 +168,10 @@ Same payoff as OpenRouter — one OpenAI-compatible endpoint, many backends, mod
 **Model map:**
 
 ```
-local/qwen3      → Spark (Ollama)        ← default, sensitive data
-local/qwen-vl    → Spark (VLM)           ← camera pipeline
+local/fast       → Spark (vLLM)          ← default, sensitive data
+local/deep       → Spark (vLLM)          ← explicit escalation, on demand
+local/vision     → Spark (vLLM)          ← camera pipeline
+local/embed      → Spark (vLLM pooling)  ← RAG + memory
 claude/sonnet    → Anthropic API         ← opt-in fallback
 gemini/flash     → Google API            ← optional
 ```
@@ -242,8 +244,8 @@ Alpaca's options support is also thinner than IBKR's, particularly for multi-leg
 
 **Do not build in blueprint order.** Voice latency is the thing most likely to disappoint, so prove it before investing in anything downstream.
 
-1. **Phase 1** — vLLM + Qwen3-30B-A3B + Wyoming faster-whisper on the Spark (§13.5)
-2. **Phase 5 (partial)** — one voice satellite + HA's Ollama integration. **This proves the entire nervous system end-to-end.** Measure latency here.
+1. **Phase 1** — vLLM + `local/fast` + Wyoming faster-whisper on the Spark (`infra/`, `docs/runbooks/SPARK-BOOTSTRAP.md`)
+2. **Phase 5 (partial)** — one voice satellite + HA's conversation agent pointed at LiteLLM `local/fast`. **This proves the entire nervous system end-to-end.** Measure latency here.
 3. **Phase 4** — UniFi Protect + LLM Vision
 4. **Phase 2** — RAG, Qdrant, MCP tool registration
 5. **Phase 3** — Firefly/Ghostfolio + FastAPI tool shim
@@ -257,17 +259,17 @@ Everything after step 2 is additive tooling on a pipeline you already trust.
 
 | Component | Implementation | Runs on |
 |---|---|---|
-| LLM serving | **vLLM** (SGLang challenger; llama.cpp fallback) — §13.5 | DGX Spark |
-| Primary LLM | Qwen3-30B-A3B (MoE) | DGX Spark |
-| VLM | Qwen2.5-VL / Gemma 3 27B | DGX Spark |
+| LLM serving | **vLLM** (SGLang challenger; llama.cpp fallback), rootless Podman — §14 | DGX Spark |
+| Primary LLM | Qwen3.6-35B-A3B (MoE, NVFP4) | DGX Spark |
+| VLM | Qwen3-VL 8B (FP8) | DGX Spark |
 | STT | faster-whisper large-v3-turbo (Wyoming) | **DGX Spark GPU** |
 | TTS | Piper | Spark or NUC |
-| Embeddings | nomic-embed-text / bge-m3 | DGX Spark |
+| Embeddings | bge-m3 (+ bge-reranker-v2-m3) | DGX Spark |
 | Vector DB | Qdrant / pgvector | DGX Spark |
 | Model router | **LiteLLM** (self-hosted) | NUC |
 | Chat/RAG UI | Open WebUI | NUC |
 | Automation hub | Home Assistant Core | NUC |
-| Conversation agents | HA Ollama (local, default) + Extended OpenAI (Claude fallback) | NUC |
+| Conversation agents | Extended OpenAI → LiteLLM `local/*` (default) + Claude fallback | NUC |
 | Camera VLM bridge | LLM Vision (HACS) | NUC → Spark |
 | Detection / NVR | UniFi Protect | UniFi hardware |
 | Spending ledger | Firefly III / Actual Budget | NUC |
@@ -346,7 +348,7 @@ Consequence: both the Waveshare 4.3C and ESP-VoCat *can* reach usable barge-in, 
 Qwen3-30B-A3B is the right *fast path* for voice latency, but for open-ended "showerthought" reasoning, keep a second, heavier MoE resident and route to it by name via LiteLLM:
 
 ```
-local/fast   → Qwen3-30B-A3B      (voice default; /no_think for snappy replies)
+local/fast   → Qwen3.6-35B-A3B    (voice default; thinking off) — was Qwen3-30B-A3B, see §14
 local/deep   → gpt-oss-120b MXFP4 (~63 GB; MoE w/ 5.1B active — still bandwidth-viable)
 ```
 
@@ -369,6 +371,17 @@ Slot this as **Phase 2.5** in the §10 build order — it reuses Phase 2 infrast
 - Current-events gap: a self-hosted **SearXNG** instance as a search tool keeps reasoning local while fetching fresh facts — one more (optional, named) allow-list hole, better posture than routing whole conversations to a cloud model.
 
 ---
+
+## 14. Amendments (2026-10-10): compute host as code
+
+The Spark is now defined as code in `infra/` and documented in `docs/INFRASTRUCTURE.md`, `docs/MODEL-CATALOG.md`, and `docs/runbooks/`. Changes to the plan above:
+
+- **Runtime: rootless Podman, not Docker.** Membership in the `docker` group is root-equivalent; the Spark also hosts other 24/7 projects. Each project is a *tenant* with its own non-login account (`svc-<name>`), rootless container store, and UID-keyed egress policy.
+- **One inference tenant serves every project.** Models load once under `svc-inference`; other tenants (stratum / mLLM) call the same endpoints with priority scheduling. 128 GB cannot hold duplicate copies.
+- **`local/fast` → Qwen3.6-35B-A3B (NVIDIA NVFP4).** Next generation of the same family, ~23 GB instead of ~31 GB, higher published quality. Qwen3-30B-A3B stays pinned as a fallback because Qwen3.6's hybrid attention needs its prefix-cache behaviour verified. `local/deep` stays gpt-oss-120b, now explicitly a different family from `local/fast` so stratum can use cross-family agreement as a calibration signal.
+- **VLM → Qwen3-VL 8B.** Same size class, one generation newer.
+- **Abliterated/derivative models** are permitted behind an evaluation gate, never as defaults (`MODEL-CATALOG.md §7`).
+- **WAN hole #4 is mechanical:** `just pull` opens HTTPS for named tenants only, with an nftables timeout, and closes it.
 
 ## Open items
 

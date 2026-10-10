@@ -1,0 +1,14 @@
+# {{ ansible_managed }}
+[containers]
+# Container stdout lands in the tenant's journal, readable with `tenantctl <t> logs`.
+log_driver = "journald"
+# No accidental host namespace sharing.
+ipcns = "private"
+
+[engine]
+events_logger = "journald"
+# Never let a service pull at start: images arrive only through `just pull`.
+pull_policy = "never"
+
+[network]
+default_rootless_network_cmd = "pasta"

@@ -2,7 +2,7 @@
 
 A local-first, multi-room conversational home assistant with persistent memory, multimodal perception, and enforced data-egress boundaries — all inference on owner-controlled hardware.
 
-**Status:** design phase. Nothing built yet. Every performance figure in these documents is an estimate or a target, not a measurement, and is labelled as such.
+**Status:** design phase, with the compute host now defined as code (`infra/`, statically validated, not yet applied to hardware). Every performance figure in these documents is an estimate or a target, not a measurement, and is labelled as such.
 
 ---
 
@@ -17,8 +17,23 @@ A local-first, multi-room conversational home assistant with persistent memory, 
 | [`docs/MEMORY-SUBSYSTEM.md`](docs/MEMORY-SUBSYSTEM.md) | Persistent memory design, parametric/non-parametric split, multi-occupant isolation and guest handling. |
 | [`docs/OPERATIONS.md`](docs/OPERATIONS.md) | SLOs, observability, failure modes and degradation paths, model lifecycle, backup and restore. |
 | [`docs/TEST-PLAN.md`](docs/TEST-PLAN.md) | Acceptance criteria per phase. What "done" means for each component before the next one starts. |
+| [`docs/INFRASTRUCTURE.md`](docs/INFRASTRUCTURE.md) | The compute host as code: Terraform + Ansible split, per-project tenants, network policy, secrets, pinning, reproducing on another Spark. |
+| [`docs/MODEL-CATALOG.md`](docs/MODEL-CATALOG.md) | Served models and why, memory budget, caller contract (priority, provenance, determinism), derivative/abliterated-model policy. |
+| [`docs/runbooks/`](docs/runbooks/) | Step-by-step procedures: [bootstrap a Spark](docs/runbooks/SPARK-BOOTSTRAP.md), [day-2 operations](docs/runbooks/SPARK-OPERATIONS.md). |
 
-**Reading order** — building: `ARCHITECTURE.md` → `SYSTEM-SPEC.md` → `LATENCY-BUDGET.md`. Reviewing: `SYSTEM-SPEC.md` → `SECURITY-MODEL.md` → `OPERATIONS.md`.
+**Reading order** — building: `ARCHITECTURE.md` → `SYSTEM-SPEC.md` → `LATENCY-BUDGET.md` → `INFRASTRUCTURE.md` → `runbooks/SPARK-BOOTSTRAP.md`. Reviewing: `SYSTEM-SPEC.md` → `SECURITY-MODEL.md` → `OPERATIONS.md`.
+
+## Repository layout
+
+```
+ARCHITECTURE.md, docs/   design (requirements, budgets, security, operations)
+infra/                   compute host as code: catalog, Terraform, Ansible, scripts
+bin/                     Hermit-pinned operator tools (Terraform, just, uv, ...)
+justfile                 every operator task; run `just` to list
+.env.example             instance values + secret slots (copy to .env; never committed)
+```
+
+Quick start for operators: `just bootstrap && just env`, then [`docs/runbooks/SPARK-BOOTSTRAP.md`](docs/runbooks/SPARK-BOOTSTRAP.md).
 
 ## Hardware
 
@@ -55,4 +70,4 @@ These are load-bearing. Changing one invalidates analysis elsewhere.
 
 This repo describes the design of a system that secures a home. That is deliberate — a security design that only works while secret is not a security design, and this one is meant to survive being read.
 
-What must never be committed here: real VLAN IDs, addresses, credentials, which rooms have satellites, or the chosen posture setting from `docs/SECURITY-MODEL.md §5.4`. Instance configuration belongs in a private repo. This one holds the design.
+What must never be committed here: real VLAN IDs, addresses, hostnames, account names, credentials, which rooms have satellites, or the chosen posture setting from `docs/SECURITY-MODEL.md §5.4`. Instance configuration belongs in the operator's gitignored `.env` (see `.env.example`) or a private repo; `.githooks/pre-commit` blocks the obvious leaks. This one holds the design and the generic code.

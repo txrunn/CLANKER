@@ -1,0 +1,6 @@
+---
+- name: Apply tenant policy
+  ansible.builtin.systemd_service:
+    name: spark-tenant-policy.service
+    state: reloaded
+    daemon_reload: true

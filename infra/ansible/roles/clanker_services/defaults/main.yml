@@ -1,0 +1,5 @@
+---
+clanker_services_user: svc-clanker
+clanker_services_home: /srv/clanker
+clanker_services_qdrant_secret: qdrant-api-key
+clanker_services_qdrant_key_env: CLANKER_QDRANT_API_KEY

@@ -1,0 +1,28 @@
+---
+- name: Pinned vLLM image is present
+  ansible.builtin.command:
+    cmd: "podman image exists {{ spark_images.vllm }}"
+    chdir: /
+  register: inference_platform_image
+  changed_when: false
+  failed_when: false
+
+- name: Weights for every enabled model are present
+  ansible.builtin.stat:
+    path: "{{ inference_platform_home }}/models/{{ item.key }}/{{ item.value.revision }}/.complete"
+  loop: "{{ spark_models | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}@{{ item.value.revision[:12] }}"
+  register: inference_platform_weights
+
+- name: Stop if anything is missing
+  ansible.builtin.assert:
+    that:
+      - inference_platform_image.rc == 0
+      - inference_platform_weights.results | rejectattr('stat.exists') | list | length == 0
+    fail_msg: >-
+      Missing artifacts:
+      {{ [] if inference_platform_image.rc == 0 else ['image ' ~ spark_images.vllm] }}
+      {{ inference_platform_weights.results | rejectattr('stat.exists') | map(attribute='item.key') | list }}.
+      Run `just pull`; the host cannot fetch anything outside that window.
+    quiet: true

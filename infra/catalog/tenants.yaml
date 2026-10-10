@@ -1,0 +1,47 @@
+# Tenants on the compute host.
+#
+# A tenant is one project that runs 24/7 on the Spark. Each tenant gets:
+#   - a dedicated, password-locked, non-login Linux account: svc-<name>
+#   - its own rootless Podman store and systemd user manager (lingering)
+#   - /srv/<name> as home and the only writable tree it owns
+#   - an nftables egress policy keyed on its UID (LAN only, no WAN)
+#
+# UIDs are fixed so a rebuild produces identical ownership on restored data.
+# Subordinate ID ranges are derived as uid * 65536 (see roles/tenant).
+# Optional `ports:` lists host ports the tenant's own services publish, so the
+# firewall filters them (inference and clanker ports come from their catalogs).
+# Never renumber a tenant. Add new ones with an unused uid.
+#
+# This file is public. It names roles, not instances: no hostnames, IPs or users.
+
+schema_version: 1
+
+tenants:
+  inference:
+    uid: 2101
+    description: >-
+      Shared model-serving platform. Holds exactly one copy of each model in
+      unified memory and serves it to every other tenant over an
+      OpenAI-compatible API. Owns all vLLM processes.
+    cpu_weight: 400 # highest: the voice path sits behind it
+    io_weight: 400
+    gpu: true
+
+  clanker:
+    uid: 2102
+    description: >-
+      C.L.A.N.K.E.R. services that must live on the compute tier (Qdrant now;
+      memory service and GPU STT later). Consumes the inference tenant.
+    cpu_weight: 200
+    io_weight: 200
+    gpu: false
+
+  stratum:
+    uid: 2103
+    description: >-
+      stratum / mLLM research engine. Batch semantic labelling over the shared
+      models, plus periodic LoRA training. Lowest priority: never competes with
+      the voice path.
+    cpu_weight: 50
+    io_weight: 50
+    gpu: true # training only; inference goes through the inference tenant

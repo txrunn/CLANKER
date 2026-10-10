@@ -1,0 +1,21 @@
+---
+- name: Fetch as svc-clanker
+  become: true
+  become_user: svc-clanker
+  environment:
+    XDG_RUNTIME_DIR: "/run/user/{{ spark_tenants.clanker.uid }}"
+  block:
+    - name: Check for the pinned Qdrant image
+      ansible.builtin.command:
+        cmd: "podman image exists {{ spark_images.qdrant }}"
+        chdir: /
+      register: clanker_services_pull_check
+      changed_when: false
+      failed_when: false
+
+    - name: Pull the pinned Qdrant image
+      when: clanker_services_pull_check.rc != 0
+      ansible.builtin.command:
+        cmd: "podman pull --quiet {{ spark_images.qdrant }}"
+        chdir: /
+      changed_when: true

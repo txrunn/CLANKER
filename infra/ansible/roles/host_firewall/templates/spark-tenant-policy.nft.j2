@@ -1,0 +1,97 @@
+#!/usr/sbin/nft -f
+# {{ ansible_managed }}
+#
+# Spark per-tenant network policy. Source: infra/ansible/roles/host_firewall.
+# Design: docs/INFRASTRUCTURE.md §5.
+#
+#   ingress  Tenant service ports accept only loopback and the client CIDRs
+#            (NUC, admin workstation). Other ports are untouched.
+#   egress   Tenant UIDs reach loopback and the LAN only. No WAN, except a
+#            per-tenant HTTPS window opened by `just pull` with a timeout.
+#
+# Rootless Podman uses pasta, which opens sockets as the tenant user, so
+# `meta skuid` covers every container a tenant runs.
+
+table inet spark_tenant_policy
+delete table inet spark_tenant_policy
+
+{# IPv4 entries contain a dot; everything else is treated as IPv6. #}
+{% set v4_lan = spark_network.lan_cidrs | select('search', '\\.') | list %}
+{% set v6_lan = spark_network.lan_cidrs | reject('search', '\\.') | list %}
+{% set v4_cli = spark_network.client_cidrs | select('search', '\\.') | list %}
+{% set v6_cli = spark_network.client_cidrs | reject('search', '\\.') | list %}
+table inet spark_tenant_policy {
+	set lan_v4 {
+		type ipv4_addr
+		flags interval
+		auto-merge
+{% if v4_lan %}
+		elements = { {{ v4_lan | join(', ') }} }
+{% endif %}
+	}
+
+	set lan_v6 {
+		type ipv6_addr
+		flags interval
+		auto-merge
+		elements = { fe80::/10, fc00::/7{% for c in v6_lan %}, {{ c }}{% endfor %} }
+	}
+
+	set client_v4 {
+		type ipv4_addr
+		flags interval
+		auto-merge
+{% if v4_cli %}
+		elements = { {{ v4_cli | join(', ') }} }
+{% endif %}
+	}
+
+	set client_v6 {
+		type ipv6_addr
+		flags interval
+		auto-merge
+{% if v6_cli %}
+		elements = { {{ v6_cli | join(', ') }} }
+{% endif %}
+	}
+
+	set tenant_ports {
+		type inet_service
+		elements = { {{ spark_tenant_ports | join(', ') }} }
+	}
+
+{% for name in spark_tenants %}
+	# Opened by `just pull`: nft add element ... pull_{{ name }} { 443 timeout 120m }
+	set pull_{{ name }} {
+		type inet_service
+		flags timeout
+	}
+
+{% endfor %}
+	chain input {
+		type filter hook input priority filter; policy accept;
+		tcp dport != @tenant_ports accept
+		iif "lo" accept
+		ip saddr @client_v4 accept
+		ip6 saddr @client_v6 accept
+		limit rate 10/minute log prefix "spark-ingress-drop: " level info
+		counter drop
+	}
+
+	chain output {
+		type filter hook output priority filter; policy accept;
+		meta skuid { {{ spark_tenants.values() | map(attribute='uid') | join(', ') }} } jump tenant_egress
+	}
+
+	chain tenant_egress {
+		oif "lo" accept
+		ct state established,related accept
+		ip daddr @lan_v4 accept
+		ip6 daddr @lan_v6 accept
+{% for name, t in spark_tenants.items() %}
+		meta skuid {{ t.uid }} tcp dport @pull_{{ name }} log prefix "spark-pull-{{ name }}: " level info accept
+{% endfor %}
+		limit rate 10/minute log prefix "spark-egress-drop: " level info
+		counter reject with icmpx admin-prohibited
+	}
+}

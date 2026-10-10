@@ -1,0 +1,10 @@
+---
+# try-restart: running models only; on-demand models stay stopped.
+- name: Restart all inference models # noqa: command-instead-of-module
+  become: true
+  become_user: "{{ inference_platform_user }}"
+  environment:
+    XDG_RUNTIME_DIR: "/run/user/{{ spark_tenants[inference_platform_tenant].uid }}"
+  ansible.builtin.command:
+    cmd: "systemctl --user try-restart {{ spark_models.keys() | map('regex_replace', '^(.*)$', 'inference-\\1.service') | join(' ') }}"
+  changed_when: true

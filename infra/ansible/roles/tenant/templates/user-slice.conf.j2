@@ -1,0 +1,8 @@
+# {{ ansible_managed }}
+# Relative CPU/IO share for svc-{{ tenant_item.key }} under contention.
+# Memory is deliberately not capped here: on GB10 unified memory, GPU
+# allocations are not reliably charged to the cgroup, so a MemoryMax would
+# limit the wrong thing. GPU memory is budgeted in infra/catalog/models.yaml.
+[Slice]
+CPUWeight={{ tenant_item.value.cpu_weight }}
+IOWeight={{ tenant_item.value.io_weight }}
