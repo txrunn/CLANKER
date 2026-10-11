@@ -1,0 +1,73 @@
+---
+# Inverse of account.yml for one tenant. Safe to re-run; absent things stay absent.
+- name: "Variables - {{ tenant_item.key }}"
+  ansible.builtin.set_fact:
+    tenant_name: "svc-{{ tenant_item.key }}"
+    tenant_uid: "{{ tenant_item.value.uid }}"
+    tenant_home: "/srv/{{ tenant_item.key }}"
+
+- name: "Disable linger - {{ tenant_item.key }}"
+  ansible.builtin.command:
+    cmd: "loginctl disable-linger {{ tenant_name }}"
+    removes: "/var/lib/systemd/linger/{{ tenant_name }}"
+
+# Stopping the user manager stops every service and container the tenant runs.
+- name: "Stop the user manager - {{ tenant_item.key }}"
+  ansible.builtin.systemd_service:
+    name: "user@{{ tenant_uid }}.service"
+    state: stopped
+
+- name: "Kill leftover processes - {{ tenant_item.key }}"
+  ansible.builtin.command:
+    cmd: "pkill -KILL -U {{ tenant_uid }}"
+  register: tenant_pkill
+  changed_when: tenant_pkill.rc == 0
+  failed_when: tenant_pkill.rc > 1 # 1 = nothing to kill
+
+- name: "Account - {{ tenant_item.key }}"
+  ansible.builtin.user:
+    name: "{{ tenant_name }}"
+    state: absent
+    remove: false # the home is handled below, only when purging
+    force: true
+
+- name: "Group - {{ tenant_item.key }}"
+  ansible.builtin.group:
+    name: "{{ tenant_name }}"
+    state: absent
+
+- name: "Subordinate ID ranges - {{ tenant_item.key }}"
+  ansible.builtin.lineinfile:
+    path: "/etc/{{ item }}"
+    regexp: "^{{ tenant_name }}:"
+    state: absent
+  loop: [subuid, subgid]
+
+- name: "CPU and IO weight drop-in - {{ tenant_item.key }}"
+  ansible.builtin.file:
+    path: "/etc/systemd/system/user-{{ tenant_uid }}.slice.d"
+    state: absent
+  notify: Reload systemd
+
+- name: "Purge home - {{ tenant_item.key }}"
+  when: tenant_purge | bool
+  block:
+    - name: "List home contents - {{ tenant_item.key }}"
+      ansible.builtin.find:
+        paths: "{{ tenant_home }}"
+        file_type: any
+        hidden: true
+        recurse: false
+      register: tenant_home_entries
+
+    - name: "Delete home contents - {{ tenant_item.key }}"
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop: "{{ tenant_home_entries.files | map(attribute='path') | reject('in', tenant_purge_keep) | list }}"
+
+    - name: "Delete the home itself - {{ tenant_item.key }}"
+      when: tenant_purge_keep | select('match', '^' ~ tenant_home ~ '/') | list | length == 0
+      ansible.builtin.file:
+        path: "{{ tenant_home }}"
+        state: absent

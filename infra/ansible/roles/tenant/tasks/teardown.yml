@@ -1,0 +1,8 @@
+---
+# Inverse of main.yml: remove every tenant account in the catalog.
+- name: Remove tenant accounts
+  ansible.builtin.include_tasks: account_teardown.yml
+  loop: "{{ spark_tenants | dict2items }}"
+  loop_control:
+    loop_var: tenant_item
+    label: "svc-{{ tenant_item.key }}"

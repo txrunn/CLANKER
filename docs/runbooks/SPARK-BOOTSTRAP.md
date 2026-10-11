@@ -44,6 +44,31 @@ ssh-copy-id -p "$TF_VAR_ssh_port" "$TF_VAR_admin_user@$TF_VAR_spark_host"
 
 The converge refuses to disable password login unless a key is on file, so this step cannot lock you out. It is still required.
 
+## 3a. Spot check (optional, about 5 minutes)
+
+Before pinning or downloading anything, confirm this Spark can run the design at all:
+
+```bash
+just spotcheck
+```
+
+It needs only `TF_VAR_spark_host`, `TF_VAR_admin_user` and sudo. It creates a throwaway tenant (`svc-spotcheck`, uid 2199) with the real `tenant` role, then checks:
+
+| Check | Proves |
+|---|---|
+| `host` | DGX OS on aarch64, driver and container toolkit present |
+| `cgroup v2`, `disk` | unified cgroups; at least 250 GiB free for `/srv` |
+| `cdi` | the GPU is advertised as `nvidia.com/gpu=all` |
+| `podman` | Podman 4.9 or newer |
+| `tenant` | the account, subordinate IDs, linger and user manager work |
+| `gpu` | `nvidia-smi -L` inside a rootless container run by that tenant |
+| `pasta` | container traffic carries the tenant's UID, so the firewall's `meta skuid` rules apply |
+| `quadlet` | the installed Podman converts the repo's real vLLM and Qdrant unit templates |
+
+Then it removes everything it created, whether the checks pass or fail: the tenant and `/srv/spotcheck`, a temporary nftables table, a CDI spec if it had to generate one, and any apt packages it installed with the dependencies they pulled in. Add `-e spotcheck_keep_packages=true` to keep the packages for the converge.
+
+It needs internet from the Spark for one small image (`docker.io/library/ubuntu:24.04`) and any missing packages. If a run is killed mid-way (Ctrl-C twice, lost SSH), the next run refuses to start until the leftovers are gone; `sudo userdel -rf svc-spotcheck; sudo nft delete table inet spark_spotcheck` clears them.
+
 ## 4. Pin
 
 Skip if the catalog is already pinned (a fork someone pinned, for example).

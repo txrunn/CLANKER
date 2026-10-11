@@ -1,0 +1,37 @@
+---
+# Inverse of main.yml: remove the tenant policy table and its unit.
+# Other nftables tables are untouched, as on converge.
+- name: Look for the policy unit
+  ansible.builtin.stat:
+    path: /etc/systemd/system/spark-tenant-policy.service
+  register: host_firewall_unit
+
+- name: Stop and disable the policy unit (ExecStop deletes the table)
+  when: host_firewall_unit.stat.exists
+  ansible.builtin.systemd_service:
+    name: spark-tenant-policy.service
+    state: stopped
+    enabled: false
+
+- name: Remove the policy and its unit
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - /etc/systemd/system/spark-tenant-policy.service
+    - /etc/nftables.d/spark-tenant-policy.nft
+
+- name: Reload systemd
+  ansible.builtin.systemd_service:
+    daemon_reload: true
+
+- name: Check for a leftover table
+  ansible.builtin.command: nft list table inet spark_tenant_policy
+  register: host_firewall_table
+  changed_when: false
+  failed_when: false
+
+- name: Delete the leftover table
+  when: host_firewall_table.rc == 0
+  ansible.builtin.command: nft delete table inet spark_tenant_policy
+  changed_when: true

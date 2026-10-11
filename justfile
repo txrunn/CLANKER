@@ -90,6 +90,12 @@ drift:
 pull:
     cd {{ ansible_dir }} && {{ playbook }} playbooks/pull.yml {{ become_flag }}
 
+# Self-cleaning hardware check: rootless GPU, pasta UID, Quadlet. No Terraform or pinning needed
+spotcheck *args:
+    : "${TF_VAR_spark_host:?set TF_VAR_spark_host in .env}" "${TF_VAR_admin_user:?set TF_VAR_admin_user in .env}"
+    cd {{ ansible_dir }} && ansible-playbook -i "$TF_VAR_spark_host," -u "$TF_VAR_admin_user" \
+      -e ansible_port="${TF_VAR_ssh_port:-22}" playbooks/spotcheck.yml {{ become_flag }} {{ args }}
+
 # Endpoint and auth checks from this workstation
 smoke:
     infra/scripts/smoke.sh
@@ -117,6 +123,10 @@ status:
 # Print outputs (endpoints, GPU budget, NVIDIA Sync entries)
 outputs:
     terraform -chdir={{ tf_dir }} output
+
+# Remove what converge created; keeps /srv/<tenant> unless -e purge=true (asks for the host name)
+teardown *args:
+    cd {{ ansible_dir }} && {{ playbook }} playbooks/teardown.yml {{ become_flag }} {{ args }}
 
 # --- Quality gates ----------------------------------------------------------
 

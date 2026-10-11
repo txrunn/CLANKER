@@ -1,0 +1,9 @@
+---
+# Teardown only (tasks/teardown.yml). The converge never deletes data.
+
+# Also delete /srv/<tenant>. Off by default: accounts use fixed UIDs, so a
+# later converge re-adopts a kept home (images, weights, Qdrant data) as is.
+tenant_purge: false
+
+# Paths kept even when purging, e.g. downloaded weights that take hours to fetch.
+tenant_purge_keep: []

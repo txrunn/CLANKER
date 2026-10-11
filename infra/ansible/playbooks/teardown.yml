@@ -1,0 +1,66 @@
+---
+# Remove what site.yml put on the host: the inverse of `just converge`.
+#
+# Default: stop every tenant's services, then remove the svc-* accounts,
+# linger, slice drop-ins and subordinate IDs, the tenant firewall table and
+# unit, the sshd and containers drop-ins, tenantctl, and the NVIDIA holds.
+# /srv/<tenant> is kept; UIDs are fixed, so a later converge re-adopts it.
+#
+#   -e purge=true          also delete /srv/<tenant>, except downloaded weights.
+#                          Snapshot Qdrant first: the `memory` collection is
+#                          irreplaceable (OPERATIONS.md §5.1).
+#   -e purge_models=true   with purge, delete the weights too.
+#   -e confirm=<host>      skip the prompt (the inventory host name).
+#
+# Left in place: apt packages, the CDI spec, and the rendered files under
+# infra/.generated/ (re-run `just apply` to converge again).
+#
+# Run: just teardown
+
+- name: Tear down the compute host
+  hosts: spark
+  become: true
+  vars_prompt:
+    - name: confirm
+      prompt: "Removes every svc-* tenant from the Spark. Type its host name (TF_VAR_spark_host) to continue"
+      private: false
+  pre_tasks:
+    - name: Confirm the target
+      ansible.builtin.assert:
+        that: confirm == ansible_host
+        fail_msg: "'{{ confirm }}' does not match {{ ansible_host }}. Nothing was changed."
+        quiet: true
+      tags: [always]
+
+  tasks:
+    # Tenants first, so no service runs while its firewall rules are removed.
+    - name: Tenants
+      ansible.builtin.include_role:
+        name: tenant
+        tasks_from: teardown
+      vars:
+        tenant_purge: "{{ purge | default(false) | bool }}"
+        tenant_purge_keep: "{{ [] if (purge_models | default(false) | bool) else ['/srv/inference/models'] }}"
+
+    - name: Firewall
+      ansible.builtin.include_role:
+        name: host_firewall
+        tasks_from: teardown
+
+    - name: Container runtime
+      ansible.builtin.include_role:
+        name: container_runtime
+        tasks_from: teardown
+
+    - name: Host baseline
+      ansible.builtin.include_role:
+        name: host_base
+        tasks_from: teardown
+
+  post_tasks:
+    - name: Report
+      ansible.builtin.debug:
+        msg: >-
+          Removed tenants {{ spark_tenants.keys() | map('regex_replace', '^', 'svc-') | join(', ') }}.
+          {{ 'Deleted /srv/<tenant>' ~ ('' if (purge_models | default(false) | bool) else ' (weights kept)') if (purge | default(false) | bool)
+             else 'Kept /srv/<tenant>; `just apply` re-adopts it.' }}

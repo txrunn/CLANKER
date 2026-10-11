@@ -1,0 +1,448 @@
+---
+# Hardware spot check for a Spark. Self-cleaning.
+#
+# Answers the questions the full converge depends on, in a few minutes, with
+# no Terraform, no pinning, no model downloads, and no effect on real tenants
+# (INFRASTRUCTURE.md §12, items 1-3):
+#
+#   host     DGX OS on aarch64, cgroup v2, NVIDIA driver and container toolkit
+#   cdi      the GPU is advertised to containers as nvidia.com/gpu=all
+#   tenant   the real `tenant` role creates a svc-* account that works
+#   gpu      a rootless container run by that account sees the GPU
+#   pasta    container traffic leaves the host as the tenant's UID, so the
+#            firewall's `meta skuid` rules apply to containers
+#   quadlet  the installed Podman accepts the repo's real unit templates
+#
+# It creates a throwaway tenant, svc-spotcheck (uid 2199, /srv/spotcheck), a
+# temporary nftables table, a CDI spec if none exists, and any missing apt
+# packages. All of it is removed in an `always` block, pass or fail. Keep the
+# packages for a converge that follows with -e spotcheck_keep_packages=true.
+#
+# Needs internet for one small image (docker.io/library/ubuntu) and for any
+# missing packages. Run: just spotcheck
+
+- name: Spot check the compute host
+  hosts: all
+  become: true
+  vars_files:
+    - ../roles/host_base/defaults/main.yml # host_base_packages: one list for both
+  vars:
+    spotcheck_image: docker.io/library/ubuntu:24.04
+    spotcheck_nft_table: spark_spotcheck
+    spotcheck_cdi_spec: /var/run/cdi/spark-spotcheck.yaml
+    spotcheck_keep_packages: false
+    spotcheck_min_free_gb: 250 # weights for every catalog model plus images, with headroom
+    # The tenant role reads spark_tenants. Here it holds only the throwaway
+    # tenant, so the cleanup (the role's own teardown) cannot touch real ones.
+    spark_tenants:
+      spotcheck:
+        uid: 2199 # reserved; Terraform rejects it in tenants.yaml
+        description: Throwaway tenant for `just spotcheck`. Safe to delete.
+        cpu_weight: 50
+        io_weight: 50
+    spotcheck_user: svc-spotcheck
+    spotcheck_uid: 2199
+    spotcheck_home: /srv/spotcheck
+    spotcheck_env:
+      XDG_RUNTIME_DIR: /run/user/2199
+      HOME: /srv/spotcheck
+    spotcheck_checks: []
+    # What the always block must undo. Each flag is set before the change it guards.
+    spotcheck_installed: []
+    spotcheck_made_account: false
+    spotcheck_made_nft: false
+    spotcheck_made_cdi: false
+
+  pre_tasks:
+    # Read-only. A failure here leaves nothing behind.
+    - name: Only the throwaway tenant is in scope
+      ansible.builtin.assert:
+        that: spark_tenants.keys() | list == ['spotcheck']
+        fail_msg: spark_tenants was overridden (host_vars passed with -e?). Run through `just spotcheck`.
+        quiet: true
+
+    - name: Host is DGX OS on aarch64
+      ansible.builtin.assert:
+        that:
+          - ansible_facts.distribution == "Ubuntu"
+          - ansible_facts.architecture == "aarch64"
+        fail_msg: "Expected DGX OS (Ubuntu, aarch64); found {{ ansible_facts.distribution }} {{ ansible_facts.architecture }}."
+        quiet: true
+
+    - name: NVIDIA driver
+      ansible.builtin.command: nvidia-smi --query-gpu=name,driver_version --format=csv,noheader
+      register: spotcheck_smi
+      changed_when: false
+
+    - name: NVIDIA Container Toolkit
+      ansible.builtin.command: nvidia-ctk --version
+      register: spotcheck_ctk
+      changed_when: false
+
+    - name: Look up accounts
+      ansible.builtin.getent:
+        database: passwd
+
+    - name: Look up groups
+      ansible.builtin.getent:
+        database: group
+
+    - name: Look for an existing throwaway home
+      ansible.builtin.stat:
+        path: "{{ spotcheck_home }}"
+      register: spotcheck_home_stat
+
+    - name: Refuse to reuse anything that already exists
+      ansible.builtin.assert:
+        that:
+          - spotcheck_user not in getent_passwd
+          - spotcheck_user not in getent_group
+          - getent_passwd | dict2items | selectattr('value.1', 'equalto', spotcheck_uid | string) | list | length == 0
+          - getent_group | dict2items | selectattr('value.1', 'equalto', spotcheck_uid | string) | list | length == 0
+          - not spotcheck_home_stat.stat.exists
+        fail_msg: >-
+          {{ spotcheck_user }}, uid/gid {{ spotcheck_uid }} or {{ spotcheck_home }} already exists,
+          probably from an interrupted run. Inspect it, remove it by hand, and re-run.
+        quiet: true
+
+    - name: Control group version
+      ansible.builtin.command: stat -f -c %T /sys/fs/cgroup
+      register: spotcheck_cgroup
+      changed_when: false
+
+    - name: Free space where weights will live
+      ansible.builtin.shell: set -o pipefail; df -B1G --output=avail "$(test -d /srv && echo /srv || echo /)" | tail -1
+      args:
+        executable: /bin/bash
+      register: spotcheck_df
+      changed_when: false
+
+    - name: Installed packages
+      ansible.builtin.package_facts:
+
+    - name: GPU devices already advertised through CDI
+      ansible.builtin.command: nvidia-ctk cdi list
+      register: spotcheck_cdi_before
+      changed_when: false
+
+    - name: Record host facts
+      ansible.builtin.set_fact:
+        spotcheck_missing: "{{ host_base_packages | reject('in', ansible_facts.packages) | list }}"
+        spotcheck_checks:
+          - name: host
+            ok: true
+            detail: >-
+              {{ ansible_facts.distribution }} {{ ansible_facts.distribution_version }} {{ ansible_facts.architecture }},
+              kernel {{ ansible_facts.kernel }}, {{ (ansible_facts.memtotal_mb / 1024) | round(1) }} GiB RAM,
+              GPU {{ spotcheck_smi.stdout | trim }}, {{ spotcheck_ctk.stdout_lines | first }}
+          - name: cgroup v2
+            ok: "{{ spotcheck_cgroup.stdout | trim == 'cgroup2fs' }}"
+            detail: "{{ spotcheck_cgroup.stdout | trim }}"
+          - name: disk
+            ok: "{{ spotcheck_df.stdout | trim | int >= spotcheck_min_free_gb }}"
+            detail: "{{ spotcheck_df.stdout | trim }} GiB free for /srv (want >= {{ spotcheck_min_free_gb }})"
+
+  tasks:
+    - name: Exercise the tenant runtime
+      block:
+        # ---- Prerequisites -------------------------------------------------
+        - name: Packages that are already orphaned (so cleanup leaves them alone)
+          when: spotcheck_missing | length > 0
+          ansible.builtin.shell: set -o pipefail; apt-get -s autoremove | awk '/^Remv/ { print $2 }'
+          args:
+            executable: /bin/bash
+          register: spotcheck_orphans_before
+          changed_when: false
+
+        - name: Mark missing packages for removal at cleanup
+          ansible.builtin.set_fact:
+            spotcheck_installed: "{{ spotcheck_missing }}"
+
+        - name: Install missing runtime packages
+          when: spotcheck_missing | length > 0
+          ansible.builtin.apt:
+            name: "{{ spotcheck_missing }}"
+            state: present
+            update_cache: true
+            cache_valid_time: 3600
+
+        - name: Generate a temporary CDI spec
+          when: "'nvidia.com/gpu=all' not in spotcheck_cdi_before.stdout"
+          block:
+            - name: Mark the CDI spec for removal at cleanup
+              ansible.builtin.set_fact:
+                spotcheck_made_cdi: true
+
+            - name: CDI runtime directory
+              ansible.builtin.file:
+                path: "{{ spotcheck_cdi_spec | dirname }}"
+                state: directory
+                mode: "0755"
+
+            - name: Generate the spec (tmpfs; gone at reboot regardless)
+              ansible.builtin.command:
+                cmd: "nvidia-ctk cdi generate --output={{ spotcheck_cdi_spec }}"
+                creates: "{{ spotcheck_cdi_spec }}"
+
+        - name: GPU devices advertised through CDI
+          ansible.builtin.command: nvidia-ctk cdi list
+          register: spotcheck_cdi
+          changed_when: false
+
+        - name: Podman version
+          ansible.builtin.command: podman version --format '{{ "{{" }}.Client.Version{{ "}}" }}'
+          register: spotcheck_podman
+          changed_when: false
+
+        - name: Record prerequisites
+          ansible.builtin.set_fact:
+            spotcheck_checks: >-
+              {{ spotcheck_checks + [
+                   {'name': 'cdi',
+                    'ok': 'nvidia.com/gpu=all' in spotcheck_cdi.stdout,
+                    'detail': (spotcheck_cdi.stdout_lines | select('search', 'nvidia.com/gpu') | join(' ')) ~
+                              (' (generated for this run; converge writes /etc/cdi/nvidia.yaml)' if spotcheck_made_cdi else ' (shipped)')},
+                   {'name': 'podman',
+                    'ok': spotcheck_podman.stdout is version('4.9', '>='),
+                    'detail': 'podman ' ~ spotcheck_podman.stdout ~ ' (want >= 4.9 for the Quadlet keys used)'
+                              ~ ((', installed for this run: ' ~ (spotcheck_installed | join(' '))) if spotcheck_installed else '')}
+                 ] }}
+
+        # ---- Tenant, built by the real role ----------------------------------
+        - name: Mark the account for removal at cleanup
+          ansible.builtin.set_fact:
+            spotcheck_made_account: true
+
+        - name: Create the throwaway tenant with the tenant role
+          ansible.builtin.include_role:
+            name: tenant
+
+        - name: Apply its handlers now (podman storage migration, systemd reload)
+          ansible.builtin.meta: flush_handlers
+
+        - name: Record tenant
+          ansible.builtin.set_fact:
+            spotcheck_checks: "{{ spotcheck_checks + [{'name': 'tenant', 'ok': true, 'detail': spotcheck_user ~ ' created, lingering, user manager up'}] }}"
+
+        # ---- Temporary egress counter ------------------------------------------
+        - name: Mark the nftables table for removal at cleanup
+          ansible.builtin.set_fact:
+            spotcheck_made_nft: true
+
+        - name: Count TCP/53 packets to the gateway sent as the tenant's UID
+          when: ansible_facts.default_ipv4.gateway is defined
+          ansible.builtin.command:
+            cmd: nft -f -
+            stdin: |
+              table inet {{ spotcheck_nft_table }} {
+                chain output {
+                  type filter hook output priority filter; policy accept;
+                  meta skuid {{ spotcheck_uid }} ip daddr {{ ansible_facts.default_ipv4.gateway }} tcp dport 53 counter
+                }
+              }
+          changed_when: true
+
+        # ---- As the tenant -----------------------------------------------------
+        - name: Run as svc-spotcheck
+          become: true
+          become_user: "{{ spotcheck_user }}"
+          environment: "{{ spotcheck_env }}"
+          block:
+            - name: Pull a small test image
+              ansible.builtin.command:
+                cmd: "podman pull --quiet {{ spotcheck_image }}"
+                chdir: /
+              register: spotcheck_pull
+              changed_when: spotcheck_pull.rc == 0
+              failed_when: false
+
+            - name: GPU inside a rootless container
+              when: spotcheck_pull.rc == 0
+              ansible.builtin.command:
+                cmd: "podman run --rm --pull=never --device nvidia.com/gpu=all {{ spotcheck_image }} nvidia-smi -L"
+                chdir: /
+              register: spotcheck_gpu
+              changed_when: false
+              failed_when: false
+
+            - name: Open a TCP connection to the gateway through pasta
+              when: spotcheck_pull.rc == 0 and ansible_facts.default_ipv4.gateway is defined
+              ansible.builtin.command:
+                argv:
+                  - podman
+                  - run
+                  - --rm
+                  - --pull=never
+                  - --network=pasta
+                  - "{{ spotcheck_image }}"
+                  - timeout
+                  - "5"
+                  - bash
+                  - -c
+                  - "exec 3<>/dev/tcp/{{ ansible_facts.default_ipv4.gateway }}/53"
+                chdir: /
+              register: spotcheck_pasta_run
+              changed_when: false
+              failed_when: false # refused or timed out is fine; the SYN is what counts
+
+            - name: Render the vLLM unit template
+              ansible.builtin.template:
+                src: "{{ playbook_dir }}/../roles/inference_platform/templates/vllm.container.j2"
+                dest: "{{ spotcheck_home }}/.config/containers/systemd/inference-spotcheck.container"
+                mode: "0640"
+              # vllm.container.j2 reads the model from `item`, as in its role.
+              loop:
+                - key: spotcheck
+                  value:
+                    alias: local/spotcheck
+                    repo: example/spotcheck
+                    revision: "{{ '0' * 40 }}"
+                    gpu_memory_utilization: 0.1
+                    placement: resident
+                    port: 18000
+                    args: [--max-model-len=1024]
+              loop_control:
+                label: inference-spotcheck.container
+              vars:
+                spark_images: { vllm: "{{ spotcheck_image }}" }
+                inference_platform_home: "{{ spotcheck_home }}"
+                inference_platform_secret_name: spotcheck
+                inference_platform_shm_size: 1g
+
+            - name: Render the Qdrant unit template
+              ansible.builtin.template:
+                src: "{{ playbook_dir }}/../roles/clanker_services/templates/qdrant.container.j2"
+                dest: "{{ spotcheck_home }}/.config/containers/systemd/clanker-spotcheck.container"
+                mode: "0640"
+              vars:
+                spark_images: { qdrant: "{{ spotcheck_image }}" }
+                spark_clanker_ports: { qdrant_http: 16333, qdrant_grpc: 16334 }
+                clanker_services_home: "{{ spotcheck_home }}"
+                clanker_services_qdrant_secret: spotcheck
+
+            - name: Find the Quadlet generator
+              ansible.builtin.stat:
+                path: "{{ item }}"
+              loop: [/usr/libexec/podman/quadlet, /usr/lib/podman/quadlet]
+              register: spotcheck_quadlet_bin
+
+            - name: Convert the units with Quadlet (dry run, nothing starts)
+              when: spotcheck_quadlet_bin.results | selectattr('stat.exists') | list | length > 0
+              ansible.builtin.command:
+                cmd: "{{ (spotcheck_quadlet_bin.results | selectattr('stat.exists') | first).item }} -dryrun -user"
+                chdir: /
+              register: spotcheck_quadlet
+              changed_when: false
+              failed_when: false
+
+        - name: Read the egress counter
+          when: ansible_facts.default_ipv4.gateway is defined
+          ansible.builtin.command: "nft list chain inet {{ spotcheck_nft_table }} output"
+          register: spotcheck_counter
+          changed_when: false
+
+        - name: Record tenant runtime checks
+          vars:
+            packets: "{{ (spotcheck_counter.stdout | default('') | regex_search('counter packets (\\d+)', '\\1') | default(['0'], true) | first) | int }}"
+            quadlet_out: "{{ (spotcheck_quadlet.stdout | default('')) ~ (spotcheck_quadlet.stderr | default('')) }}"
+          ansible.builtin.set_fact:
+            spotcheck_checks: >-
+              {{ spotcheck_checks + [
+                   {'name': 'image pull',
+                    'ok': spotcheck_pull.rc == 0,
+                    'detail': spotcheck_image if spotcheck_pull.rc == 0
+                              else 'failed (no internet from the Spark?): ' ~ (spotcheck_pull.stderr | trim | truncate(200))},
+                   {'name': 'gpu',
+                    'ok': 'GPU 0' in (spotcheck_gpu.stdout | default('')),
+                    'detail': (spotcheck_gpu.stdout | default('') | trim) or (spotcheck_gpu.stderr | default('not run') | trim | truncate(300))},
+                   {'name': 'pasta',
+                    'ok': packets | int > 0,
+                    'detail': ('%s packet(s) matched meta skuid %s' | format(packets, spotcheck_uid))
+                              if ansible_facts.default_ipv4.gateway is defined else 'no IPv4 default gateway; not tested'},
+                   {'name': 'quadlet',
+                    'ok': spotcheck_quadlet.rc | default(1) == 0
+                          and 'inference-spotcheck.service' in quadlet_out
+                          and 'clanker-spotcheck.service' in quadlet_out
+                          and 'unsupported key' not in quadlet_out,
+                    'detail': 'vllm.container.j2 and qdrant.container.j2 convert cleanly'
+                              if spotcheck_quadlet.rc | default(1) == 0 and 'unsupported key' not in quadlet_out
+                              else (quadlet_out | regex_findall('(?im)^.*(?:unsupported|error).*$') | join('; ') | truncate(400)) or 'quadlet binary not found'}
+                 ] }}
+
+      rescue:
+        - name: Record the unexpected failure
+          ansible.builtin.set_fact:
+            spotcheck_checks: >-
+              {{ spotcheck_checks + [{'name': 'error', 'ok': false,
+                 'detail': (ansible_failed_task.name | default('?')) ~ ': ' ~ (ansible_failed_result.msg | default('') | truncate(300))}] }}
+
+      always:
+        # ---- Cleanup, in reverse --------------------------------------------
+        - name: Run handlers still pending from a failed step, while the account exists
+          ansible.builtin.meta: flush_handlers
+
+        - name: Remove the throwaway tenant (the tenant role's own teardown)
+          when: spotcheck_made_account | bool
+          ansible.builtin.include_role:
+            name: tenant
+            tasks_from: teardown
+          vars:
+            tenant_purge: true
+            tenant_purge_keep: []
+
+        - name: Apply teardown handlers now
+          ansible.builtin.meta: flush_handlers
+
+        - name: Remove the temporary nftables table
+          when: spotcheck_made_nft | bool
+          ansible.builtin.command: "nft delete table inet {{ spotcheck_nft_table }}"
+          register: spotcheck_nft_rm
+          changed_when: spotcheck_nft_rm.rc == 0
+          failed_when: false # never created (no gateway) is fine
+
+        - name: Remove the temporary CDI spec
+          when: spotcheck_made_cdi | bool
+          ansible.builtin.file:
+            path: "{{ spotcheck_cdi_spec }}"
+            state: absent
+
+        - name: Remove packages installed for this run
+          when: spotcheck_installed | length > 0 and not (spotcheck_keep_packages | bool)
+          block:
+            - name: Uninstall them
+              ansible.builtin.apt:
+                name: "{{ spotcheck_installed }}"
+                state: absent
+
+            - name: Dependencies they left orphaned
+              ansible.builtin.shell: set -o pipefail; apt-get -s autoremove | awk '/^Remv/ { print $2 }'
+              args:
+                executable: /bin/bash
+              register: spotcheck_orphans_after
+              changed_when: false
+
+            - name: Remove only those (orphans from before this run stay)
+              vars:
+                spotcheck_new_orphans: "{{ spotcheck_orphans_after.stdout_lines | reject('in', spotcheck_orphans_before.stdout_lines | default([])) | list }}"
+              when: spotcheck_new_orphans | length > 0
+              ansible.builtin.apt:
+                name: "{{ spotcheck_new_orphans }}"
+                state: absent
+
+  post_tasks:
+    - name: Results
+      ansible.builtin.debug:
+        msg: >-
+          {%- set out = [] -%}
+          {%- for c in spotcheck_checks -%}
+          {%- set _ = out.append(('PASS  ' if c.ok | bool else 'FAIL  ') ~ ('%-10s' | format(c.name)) ~ ' ' ~ (c.detail | trim)) -%}
+          {%- endfor -%}
+          {{ out }}
+
+    - name: Every check passed
+      ansible.builtin.assert:
+        that: spotcheck_checks | rejectattr('ok') | list | length == 0
+        fail_msg: >-
+          Failed: {{ spotcheck_checks | rejectattr('ok') | map(attribute='name') | join(', ') }}.
+          Everything the spot check created has been removed. See docs/runbooks/SPARK-OPERATIONS.md#troubleshooting.
+        success_msg: "Spot check passed and cleaned up. Next: docs/runbooks/SPARK-BOOTSTRAP.md step 4."

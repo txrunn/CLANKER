@@ -121,10 +121,10 @@ resource "terraform_data" "catalog" {
     }
 
     precondition {
-      condition = alltrue([for name, t in local.tenants : can(regex("^[a-z][a-z0-9-]{1,20}$", name)) && t.uid >= 2000 && t.uid < 60000]) && (
+      condition = alltrue([for name, t in local.tenants : can(regex("^[a-z][a-z0-9-]{1,20}$", name)) && t.uid >= 2000 && t.uid < 60000 && t.uid != 2199 && name != "spotcheck"]) && (
         length(distinct([for t in values(local.tenants) : t.uid])) == length(local.tenants)
       )
-      error_message = "Tenant names must be lowercase slugs and uids unique in [2000, 60000)."
+      error_message = "Tenant names must be lowercase slugs and uids unique in [2000, 60000). uid 2199 and the name spotcheck are reserved for `just spotcheck`."
     }
 
     precondition {

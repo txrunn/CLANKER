@@ -10,7 +10,8 @@
 # Subordinate ID ranges are derived as uid * 65536 (see roles/tenant).
 # Optional `ports:` lists host ports the tenant's own services publish, so the
 # firewall filters them (inference and clanker ports come from their catalogs).
-# Never renumber a tenant. Add new ones with an unused uid.
+# Never renumber a tenant. Add new ones with an unused uid. uid 2199 and the
+# name `spotcheck` are reserved for the throwaway tenant of `just spotcheck`.
 #
 # This file is public. It names roles, not instances: no hostnames, IPs or users.
 

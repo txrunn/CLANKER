@@ -12,7 +12,7 @@ The compute host (DGX Spark) as code. Terraform validates and renders the desire
 ```
 catalog/      tenants.yaml, models.yaml, images.yaml — what runs (committed, instance-free)
 terraform/    modules/spark-host (contract) + envs/prd (root)
-ansible/      playbooks/{site,pull}.yml + roles/
+ansible/      playbooks/{site,pull,spotcheck,teardown}.yml + roles/
 scripts/      pin-images.sh, pin-models.sh, smoke.sh
 nvidia-sync/  optional NVIDIA Sync custom-app scripts
 .generated/   rendered inventory + host vars (gitignored)

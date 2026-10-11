@@ -101,10 +101,28 @@ Optional shortcuts on your laptop. Sync's custom apps forward a local port to th
 
 The API docs page needs the inference key for "Try it out"; Qdrant's dashboard asks for its key. Closing an app in Sync only closes the tunnel; services keep running. Ports forwarded by Sync must be free on your laptop.
 
+## Tear down
+
+Removes what the converge created, in reverse order: tenant services and accounts first, then the firewall table, the containers and sshd drop-ins, `tenantctl`, and the NVIDIA holds.
+
+```bash
+just teardown                                  # asks you to type TF_VAR_spark_host
+just teardown -e purge=true                    # also delete /srv/<tenant>, keep weights
+just teardown -e purge=true -e purge_models=true
+```
+
+- **Default keeps `/srv/<tenant>`.** UIDs are fixed, so `just apply` later re-adopts images, weights and Qdrant data without re-downloading.
+- **Purging deletes Qdrant's `memory` collection.** Snapshot it to the NAS first (see Backups).
+- **Left in place:** apt packages (podman, passt, and so on), the CDI spec, and your rendered files in `infra/.generated/`.
+- Removing the sshd drop-in brings back the DGX OS default for password login.
+
+Each role keeps its inverse in `tasks/teardown.yml`; a role that changes the host gets a matching teardown step in the same commit.
+
 ## Troubleshooting
 
 | Symptom | Check |
 |---|---|
+| Not sure the host can run this at all | `just spotcheck`: each failing line names what is missing, and nothing is left behind |
 | Converge fails at "GPU smoke test" | `ssh … sudo nvidia-ctk cdi list` shows `nvidia.com/gpu=all`; `ls -l /dev/nvidia*` are readable; Podman ≥ 4.x supports CDI. As `svc-inference`: `sudo tenantctl inference podman run --rm --device nvidia.com/gpu=all --entrypoint nvidia-smi <image> -L` |
 | Model unit restarts in a loop | `sudo tenantctl inference logs inference-<key>`. Common: a `[verify]` flag unsupported by the pinned vLLM; `gpu_memory_utilization` larger than what is free; read-only root filesystem (set `read_only: false` on that model) |
 | Endpoint unreachable from the NUC | NUC address missing from `TF_VAR_client_cidrs`; `spark-ingress-drop` in the kernel log |

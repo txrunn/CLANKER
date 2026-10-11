@@ -1,0 +1,30 @@
+---
+# Inverse of main.yml. Packages stay installed: removing podman or nftables
+# could break other things on the host, and they are inert without tenants.
+- name: Remove the sshd drop-in (password login returns to the DGX OS default)
+  ansible.builtin.file:
+    path: /etc/ssh/sshd_config.d/50-spark.conf
+    state: absent
+  notify: Reload sshd
+
+- name: Remove tenantctl
+  ansible.builtin.file:
+    path: /usr/local/sbin/tenantctl
+    state: absent
+
+- name: List held NVIDIA packages
+  ansible.builtin.shell: >-
+    set -o pipefail;
+    dpkg-query -W -f='${Package} ${db:Status-Want}\n' |
+    awk '$2 == "hold" { print $1 }' |
+    grep -E '{{ host_base_nvidia_hold_patterns | join("|") }}' || true
+  args:
+    executable: /bin/bash
+  register: host_base_held
+  changed_when: false
+
+- name: Release the holds
+  ansible.builtin.dpkg_selections:
+    name: "{{ item }}"
+    selection: install
+  loop: "{{ host_base_held.stdout_lines }}"

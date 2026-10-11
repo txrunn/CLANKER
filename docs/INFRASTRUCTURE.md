@@ -68,6 +68,8 @@ infra/
   ansible/
     playbooks/site.yml       converge
     playbooks/pull.yml       egress window + fetch images and weights
+    playbooks/spotcheck.yml  self-cleaning hardware check (no Terraform needed)
+    playbooks/teardown.yml   inverse of site.yml; each role owns tasks/teardown.yml
     roles/
       host_base/             packages, NVIDIA holds, sshd hardening, tenantctl
       container_runtime/     rootless Podman, CDI GPU spec, registry policy
@@ -189,8 +191,10 @@ Secrets flow from the environment straight to Ansible (`lookup('env')`) and neve
 | `just converge` | Run the converge now (prompts for sudo if no password file) | yes |
 | `just drift` | Converge in check mode; exit 2 if anything would change | no |
 | `just pull` | Open the egress window, fetch pinned images and weights, close it | yes (downloads only) |
+| `just spotcheck` | Throwaway tenant proves rootless GPU, pasta UID and Quadlet keys, then removes itself | yes (leaves nothing) |
 | `just smoke` | Auth, endpoint, and revision checks from the workstation | no |
 | `just model up\|down\|status <key>` | Start or stop an on-demand model | yes |
+| `just teardown` | Remove everything converge created; `/srv/<tenant>` kept unless `-e purge=true` | yes |
 | `just lint` | fmt, validate, tflint, ansible-lint, yamllint, shellcheck, gitleaks | no |
 
 Terraform only converges when inputs or roles change. Drift that happens on the host without an input change (someone edits a file) is caught by `just drift`, which is safe to run on a schedule.
@@ -218,7 +222,7 @@ Optional convenience, not part of the system. Sync's custom apps forward a local
 
 ## 12. Hardware verification checklist
 
-Before relying on this, confirm on the Spark and change **[verify]** labels to **[measured]**:
+Before relying on this, confirm on the Spark and change **[verify]** labels to **[measured]**. `just spotcheck` answers items 1-3 in a few minutes before anything is installed for real, and removes everything it creates; the converge re-checks item 1 as `svc-inference`.
 
 1. Rootless CDI works: the converge's `nvidia-smi -L` step passes as `svc-inference`.
 2. pasta preserves the tenant UID: from a `svc-clanker` container, `curl https://example.com` is rejected and logged as `spark-egress-drop`; during `just pull` it succeeds for `svc-inference` only.
