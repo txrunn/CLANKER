@@ -92,8 +92,18 @@ pull:
 
 # Self-cleaning hardware check: rootless GPU, pasta UID, Quadlet. No Terraform or pinning needed
 spotcheck *args:
-    : "${TF_VAR_spark_host:?set TF_VAR_spark_host in .env}" "${TF_VAR_admin_user:?set TF_VAR_admin_user in .env}"
-    cd {{ ansible_dir }} && ansible-playbook -i "$TF_VAR_spark_host," -u "$TF_VAR_admin_user" \
+    #!/usr/bin/env bash
+    set -euo pipefail
+    [[ -f .env ]] || { echo "No .env yet. Run: just env, then set TF_VAR_spark_host and TF_VAR_admin_user in it." >&2; exit 1; }
+    [[ -x .venv/bin/ansible-playbook ]] || { echo "Ansible not installed yet. Run: just bootstrap" >&2; exit 1; }
+    for v in TF_VAR_spark_host TF_VAR_admin_user; do
+      [[ -n "${!v:-}" ]] || { echo "$v is empty in .env." >&2; exit 1; }
+    done
+    if [[ $TF_VAR_spark_host == spark.local && $TF_VAR_admin_user == admin ]]; then
+      echo "Note: .env still has the example host and user (spark.local / admin)." >&2
+    fi
+    cd {{ ansible_dir }}
+    ansible-playbook -i "$TF_VAR_spark_host," -u "$TF_VAR_admin_user" \
       -e ansible_port="${TF_VAR_ssh_port:-22}" playbooks/spotcheck.yml {{ become_flag }} {{ args }}
 
 # Endpoint and auth checks from this workstation
