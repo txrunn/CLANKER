@@ -52,7 +52,7 @@ Before pinning or downloading anything, confirm this Spark can run the design at
 just spotcheck
 ```
 
-It needs only `TF_VAR_spark_host`, `TF_VAR_admin_user` and sudo. It creates a throwaway tenant (`svc-spotcheck`, uid 2199) with the real `tenant` role, then checks:
+It needs only `TF_VAR_spark_host`, `TF_VAR_admin_user` and sudo. Run it from your workstation, or on the Spark itself (it then connects locally instead of over SSH). It creates a throwaway tenant (`svc-spotcheck`, uid 2199) with the real `tenant` role, then checks:
 
 | Check | Proves |
 |---|---|

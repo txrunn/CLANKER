@@ -102,9 +102,15 @@ spotcheck *args:
     if [[ $TF_VAR_spark_host == spark.local && $TF_VAR_admin_user == admin ]]; then
       echo "Note: .env still has the example host and user (spark.local / admin)." >&2
     fi
+    # Running on the Spark itself: no SSH to ourselves, just a local connection.
+    me=$(hostname -s)
+    case "${TF_VAR_spark_host,,}" in
+      localhost|127.0.0.1|::1|"${me,,}"|"${me,,}.local"|"$(hostname -f 2>/dev/null | tr A-Z a-z)")
+        conn=(-c local) ;;
+      *) conn=(-u "$TF_VAR_admin_user" -e ansible_port="${TF_VAR_ssh_port:-22}") ;;
+    esac
     cd {{ ansible_dir }}
-    ansible-playbook -i "$TF_VAR_spark_host," -u "$TF_VAR_admin_user" \
-      -e ansible_port="${TF_VAR_ssh_port:-22}" playbooks/spotcheck.yml {{ become_flag }} {{ args }}
+    ansible-playbook -i "$TF_VAR_spark_host," "${conn[@]}" playbooks/spotcheck.yml {{ become_flag }} {{ args }}
 
 # Endpoint and auth checks from this workstation
 smoke:
