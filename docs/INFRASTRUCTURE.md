@@ -175,7 +175,7 @@ Secrets flow from the environment straight to Ansible (`lookup('env')`) and neve
 | Model weights | Hugging Face commit SHA | `just pin-models <key>` |
 | NVIDIA driver + toolkit | `apt-mark hold` | [driver upgrade runbook](runbooks/SPARK-OPERATIONS.md#driver-upgrade) |
 
-**Reusing this on another Spark.** Nothing in the repo names a specific house. Clone, `just bootstrap`, `just env`, set the `TF_VAR_*` values for your host and LAN, then follow [`runbooks/SPARK-BOOTSTRAP.md`](runbooks/SPARK-BOOTSTRAP.md). Tenants, models, and ports come from the catalog; edit it in a fork if your mix differs.
+**Reusing this on another Spark.** Nothing in the repo names a specific house. Clone, `. bin/activate-hermit`, `just bootstrap`, `just env`, set the `TF_VAR_*` values for your host and LAN, then follow [`runbooks/SPARK-BOOTSTRAP.md`](runbooks/SPARK-BOOTSTRAP.md). Tenants, models, and ports come from the catalog; edit it in a fork if your mix differs.
 
 **What code cannot recreate:** Qdrant collections (the `memory` collection is irreplaceable, `OPERATIONS.md §5.1`) and any LoRA adapters. Those are backed up to the NAS; restore is part of `NFR-4.2`.
 

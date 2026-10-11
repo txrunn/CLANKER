@@ -33,7 +33,7 @@ justfile                 every operator task; run `just` to list
 .env.example             instance values + secret slots (copy to .env; never committed)
 ```
 
-Quick start for operators: `just bootstrap && just env`, set the host and admin user in `.env`, `just spotcheck` (a few minutes, leaves nothing behind), then [`docs/runbooks/SPARK-BOOTSTRAP.md`](docs/runbooks/SPARK-BOOTSTRAP.md).
+Quick start for operators: `. bin/activate-hermit && just bootstrap && just env`, set the host and admin user in `.env`, `just spotcheck` (a few minutes, leaves nothing behind), then [`docs/runbooks/SPARK-BOOTSTRAP.md`](docs/runbooks/SPARK-BOOTSTRAP.md).
 
 ## Hardware
 

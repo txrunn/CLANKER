@@ -6,14 +6,14 @@ From a factory-fresh DGX Spark to a converged compute host. Design: [`../INFRAST
 
 - DGX OS first-boot setup done; you have an admin account with sudo (e.g. the one NVIDIA Sync uses).
 - The Spark has a stable address on the server VLAN (DHCP reservation) and is reachable by name or IP from your workstation.
-- Your workstation: Linux or macOS with `git`, `bash`, `ssh`, `curl`, `openssl`. Everything else comes from Hermit and uv.
+- Your workstation: Linux or macOS with `git`, `bash`, `ssh`, `curl`, `openssl`. Everything else, `just` included, comes from Hermit and uv: nothing to install. Hermit downloads each pinned binary into `~/.cache/hermit` on first use. Without activating, call them by path (`bin/just bootstrap`).
 - For the bootstrap run only: the gateway allows the Spark to reach the internet (apt packages, image registry, Hugging Face). Close it again afterwards (`ARCHITECTURE.md §1`).
 
 ## 1. Workstation tooling
 
 ```bash
 git clone https://github.com/txrunn/CLANKER && cd CLANKER
-. bin/activate-hermit        # optional; the justfile works without it
+. bin/activate-hermit        # pinned just, terraform, uv, ... on PATH for this shell
 just bootstrap               # uv sync --frozen; enables .githooks
 ```
 
