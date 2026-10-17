@@ -45,7 +45,7 @@ infra/catalog/*.yaml ──────────┘   (plan shows the diff)  
 | Docker | Anyone in the `docker` group is effectively root. Rootless Podman has no daemon and runs each tenant's containers as that tenant. |
 | `ansible/ansible` Terraform provider | Stores playbook output in state and re-runs on fuzzy triggers. A `terraform_data` + `local-exec` with explicit content hashes is clearer. |
 
-**Pinned tooling.** [Hermit](https://github.com/cashapp/hermit) pins every binary (`bin/`): Terraform 1.16.5, just, uv, tflint, yq, jq, crane, shellcheck, gitleaks. `uv` pins the Python tools (`ansible-core 2.21.5`, `ansible-lint`, `yamllint`) in `pyproject.toml` + `uv.lock`. The justfile puts both on `PATH`, so nothing has to be installed globally and two operators get identical tools.
+**Pinned tooling.** [Hermit](https://github.com/cashapp/hermit) pins every binary (`bin/`): Terraform 1.16.5, just, uv, tflint, yq, jq, crane, shellcheck, gitleaks. `uv` pins the Python tools (`ansible-core 2.21.5`, `ansible-lint`, `yamllint`) in `pyproject.toml` + `uv.lock`. The justfile puts both on `PATH`, so nothing has to be installed globally and two operators get identical tools. Hermit's shell hook puts `bin/` on `PATH` while you are inside the repo, which is what lets the docs say `just` rather than `bin/just`.
 
 ---
 
@@ -141,7 +141,7 @@ Implemented as its own nftables table, `inet spark_tenant_policy`, loaded by `sp
 ## 6. Containers
 
 - **Runtime:** rootless Podman, no daemon. Services are [Quadlet](https://docs.podman.io/en/latest/markdown/podman-systemd.unit.5.html) files in `~/.config/containers/systemd/`, generated into systemd user units.
-- **GPU:** CDI (`AddDevice=nvidia.com/gpu=all`), spec generated with `nvidia-ctk cdi generate` if DGX OS did not ship one. The converge ends with `nvidia-smi -L` inside a rootless container as `svc-inference`; if CDI does not work rootless on this driver, the run fails there **[verify]**.
+- **GPU:** CDI (`AddDevice=nvidia.com/gpu=all`). DGX OS's `nvidia-cdi-refresh` writes `/var/run/cdi/nvidia.yaml` as CDI spec 0.7.0, whose `additionalGids` field Ubuntu 24.04's Podman 4.9 cannot parse, so Podman discards the file and the GPU is "unresolvable" **[measured]**. The converge therefore keeps a copy at `/etc/cdi/nvidia-podman.json`: `spark-cdi-compat` regenerates it with `nvidia-ctk`, drops `additionalGids` (the device nodes are `0666` on GB10, so nothing is lost) and labels it 0.6.0, and a drop-in on `nvidia-cdi-refresh.service` reruns it whenever DGX OS regenerates its own spec. CDI ranks `/etc/cdi` below `/var/run/cdi`, so a future Podman that reads the original uses it and the copy is inert; turn it off then with `just converge -e spark_cdi_compat=false`. The converge ends with `nvidia-smi -L` inside a rootless container as `svc-inference`, the only check that tests what Podman sees.
 - **Hardening per container:** `NoNewPrivileges`, `DropCapability=ALL`, read-only root filesystem with a tmpfs `/tmp` (vLLM; per-model opt-out with `read_only: false`), weights mounted read-only, writable caches on a dedicated volume.
 - **No runtime pulls:** `pull_policy = "never"` host-wide and `--pull=never` per unit. A service can only run an image `just pull` fetched while the window was open.
 - **Fully qualified names only:** `short-name-mode = "enforcing"` with no search registries.
@@ -175,7 +175,7 @@ Secrets flow from the environment straight to Ansible (`lookup('env')`) and neve
 | Model weights | Hugging Face commit SHA | `just pin-models <key>` |
 | NVIDIA driver + toolkit | `apt-mark hold` | [driver upgrade runbook](runbooks/SPARK-OPERATIONS.md#driver-upgrade) |
 
-**Reusing this on another Spark.** Nothing in the repo names a specific house. Clone, `. bin/activate-hermit`, `just bootstrap`, `just env`, set the `TF_VAR_*` values for your host and LAN, then follow [`runbooks/SPARK-BOOTSTRAP.md`](runbooks/SPARK-BOOTSTRAP.md). Tenants, models, and ports come from the catalog; edit it in a fork if your mix differs.
+**Reusing this on another Spark.** Nothing in the repo names a specific house. Clone, install the Hermit shell hook (`bin/hermit shell-hooks --bash`), `just bootstrap`, `just env`, set the `TF_VAR_*` values for your host and LAN, then follow [`runbooks/SPARK-BOOTSTRAP.md`](runbooks/SPARK-BOOTSTRAP.md). Tenants, models, and ports come from the catalog; edit it in a fork if your mix differs.
 
 **What code cannot recreate:** Qdrant collections (the `memory` collection is irreplaceable, `OPERATIONS.md §5.1`) and any LoRA adapters. Those are backed up to the NAS; restore is part of `NFR-4.2`.
 

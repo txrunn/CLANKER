@@ -2,25 +2,71 @@
 # Rootless Podman with GPU access through CDI (Container Device Interface).
 # No root daemon exists; each tenant runs its own containers as itself.
 
-- name: Look for an existing CDI spec
-  ansible.builtin.stat:
-    path: "{{ item }}"
-  loop:
-    - /etc/cdi/nvidia.yaml
-    - /var/run/cdi/nvidia.yaml
-  register: container_runtime_cdi
+# GPU spec. DGX OS ships one Podman 4.9 cannot parse, so by default a
+# compatible copy is kept in /etc/cdi (files/spark-cdi-compat). The rootless
+# GPU test at the end of the inference role is the proof that it works;
+# `nvidia-ctk cdi list` runs as root with a newer parser and cannot tell.
+- name: Podman-compatible CDI spec
+  when: container_runtime_cdi_compat | bool
+  block:
+    - name: Install spark-cdi-compat
+      ansible.builtin.copy:
+        src: spark-cdi-compat
+        dest: /usr/local/sbin/spark-cdi-compat
+        owner: root
+        group: root
+        mode: "0755"
 
-- name: Generate the NVIDIA CDI spec
-  when: container_runtime_cdi.results | selectattr('stat.exists') | list | length == 0
-  ansible.builtin.command:
-    cmd: nvidia-ctk cdi generate --output=/etc/cdi/nvidia.yaml
-    creates: /etc/cdi/nvidia.yaml
+    - name: Look for DGX OS's spec refresh unit
+      ansible.builtin.stat:
+        path: /usr/lib/systemd/system/nvidia-cdi-refresh.service
+      register: container_runtime_cdi_refresh
 
-- name: Confirm the GPU device is advertised
-  ansible.builtin.command: nvidia-ctk cdi list
-  register: container_runtime_cdi_list
-  changed_when: false
-  failed_when: "'nvidia.com/gpu=all' not in container_runtime_cdi_list.stdout"
+    - name: Drop-in directory for the refresh unit
+      when: container_runtime_cdi_refresh.stat.exists
+      ansible.builtin.file:
+        path: "{{ container_runtime_cdi_refresh_dropin | dirname }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Rewrite the copy whenever DGX OS regenerates its spec
+      when: container_runtime_cdi_refresh.stat.exists
+      ansible.builtin.copy:
+        dest: "{{ container_runtime_cdi_refresh_dropin }}"
+        owner: root
+        group: root
+        mode: "0644"
+        content: |
+          # {{ ansible_managed }}
+          # Keep the Podman-compatible copy in step with DGX OS's spec.
+          [Service]
+          ExecStartPost=/usr/local/sbin/spark-cdi-compat {{ container_runtime_cdi_compat_spec }}
+      notify: Reload systemd
+
+    - name: Write the copy now
+      ansible.builtin.command:
+        cmd: "/usr/local/sbin/spark-cdi-compat {{ container_runtime_cdi_compat_spec }}"
+      register: container_runtime_cdi_compat_run
+      changed_when: "'updated' in container_runtime_cdi_compat_run.stdout"
+
+- name: Generate a CDI spec if the host has none (compat off)
+  when: not (container_runtime_cdi_compat | bool)
+  block:
+    - name: Look for an existing CDI spec
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      loop:
+        - /etc/cdi/nvidia.yaml
+        - /var/run/cdi/nvidia.yaml
+      register: container_runtime_cdi
+
+    - name: Generate the NVIDIA CDI spec
+      when: container_runtime_cdi.results | selectattr('stat.exists') | list | length == 0
+      ansible.builtin.command:
+        cmd: nvidia-ctk cdi generate --output=/etc/cdi/nvidia.yaml
+        creates: /etc/cdi/nvidia.yaml
 
 - name: Ensure containers drop-in directories exist
   ansible.builtin.file:

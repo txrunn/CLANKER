@@ -1,0 +1,7 @@
+---
+# Write a CDI spec Podman 4.9 can parse (files/spark-cdi-compat explains why).
+# Turn off once the installed Podman reads DGX OS's own spec; `just spotcheck`
+# shows whether it does.
+container_runtime_cdi_compat: "{{ spark_cdi_compat | default(true) }}"
+container_runtime_cdi_compat_spec: /etc/cdi/nvidia-podman.json
+container_runtime_cdi_refresh_dropin: /etc/systemd/system/nvidia-cdi-refresh.service.d/50-spark-cdi-compat.conf

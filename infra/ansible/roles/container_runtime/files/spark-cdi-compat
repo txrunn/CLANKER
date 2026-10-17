@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+# spark-cdi-compat - write a GPU CDI spec that the installed Podman can parse.
+#
+# DGX OS's nvidia-cdi-refresh writes /var/run/cdi/nvidia.yaml as CDI spec
+# 0.7.0, which adds `additionalGids`. Podman 4.9 (Ubuntu 24.04) only knows
+# spec 0.6.0 and rejects the whole file, so `--device nvidia.com/gpu=all`
+# fails with "unresolvable CDI devices". This writes a 0.6.0 copy without
+# that field. Nothing is lost on GB10: the device nodes are mode 0666.
+#
+# The copy goes in /etc/cdi, which CDI ranks below /var/run/cdi. A newer
+# Podman that can read the original prefers it, so the copy is inert there.
+#
+#   spark-cdi-compat [OUTPUT]   default /etc/cdi/nvidia-podman.json
+#
+# Prints "updated" or "unchanged". Run by the converge and after every
+# nvidia-cdi-refresh (systemd drop-in). Managed by Ansible
+# (roles/container_runtime); edits on the host are overwritten.
+set -euo pipefail
+
+out=${1:-/etc/cdi/nvidia-podman.json}
+install -d -m 0755 "$(dirname "$out")"
+tmp=$(mktemp "$out.XXXXXX")
+trap 'rm -f "$tmp"' EXIT
+
+nvidia-ctk cdi generate --format=json |
+  jq 'del(.. | .additionalGids?) | .cdiVersion = "0.6.0"' >"$tmp"
+
+# Refuse to install a spec without the device every unit asks for.
+jq -e '.kind == "nvidia.com/gpu" and any(.devices[]; .name == "all")' "$tmp" >/dev/null ||
+  { echo "spark-cdi-compat: generated spec has no nvidia.com/gpu=all" >&2; exit 1; }
+
+if [[ -f $out ]] && cmp -s "$tmp" "$out"; then
+  echo unchanged
+  exit 0
+fi
+chmod 0644 "$tmp"
+mv -f "$tmp" "$out"
+trap - EXIT
+echo updated

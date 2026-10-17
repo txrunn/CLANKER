@@ -2,7 +2,7 @@
 
 Day-2 procedures for the compute host. Design: [`../INFRASTRUCTURE.md`](../INFRASTRUCTURE.md). Models: [`../MODEL-CATALOG.md`](../MODEL-CATALOG.md).
 
-All commands run from the repo root on the operator workstation unless shown with `ssh`. `tenantctl` runs on the Spark (`sudo tenantctl <tenant> status|systemctl|logs|podman`).
+All commands run from the repo root on the operator workstation unless shown with `ssh`. `just` assumes the Hermit shell hook from [`SPARK-BOOTSTRAP.md` step 1](SPARK-BOOTSTRAP.md#1-workstation-tooling); without it, type `bin/just`. `tenantctl` runs on the Spark (`sudo tenantctl <tenant> status|systemctl|logs|podman`).
 
 ---
 
@@ -78,7 +78,7 @@ The NVIDIA driver and container toolkit are held so routine updates cannot chang
 
 1. Read the DGX OS release notes for the new driver; check the pinned vLLM image supports it.
 2. `ssh … sudo apt-mark unhold <packages>`, upgrade, reboot.
-3. Regenerate CDI: `ssh … sudo nvidia-ctk cdi generate --output=/etc/cdi/nvidia.yaml`.
+3. CDI follows on its own: DGX OS's `nvidia-cdi-refresh` regenerates its spec after the driver changes, and the converge's hook rewrites the Podman-compatible copy right after (`sudo spark-cdi-compat` does it by hand).
 4. `just converge` (re-holds the new versions; re-runs the rootless GPU smoke test).
 5. `just smoke`, then the latency benchmark from `TEST-PLAN.md`.
 
@@ -113,7 +113,7 @@ just teardown -e purge=true -e purge_models=true
 
 - **Default keeps `/srv/<tenant>`.** UIDs are fixed, so `just apply` later re-adopts images, weights and Qdrant data without re-downloading.
 - **Purging deletes Qdrant's `memory` collection.** Snapshot it to the NAS first (see Backups).
-- **Left in place:** apt packages (podman, passt, and so on), the CDI spec, and your rendered files in `infra/.generated/`.
+- **Left in place:** apt packages (podman, passt, and so on), DGX OS's own CDI spec, and your rendered files in `infra/.generated/`. The Podman-compatible copy, `spark-cdi-compat` and its refresh hook are removed.
 - Removing the sshd drop-in brings back the DGX OS default for password login.
 
 Each role keeps its inverse in `tasks/teardown.yml`; a role that changes the host gets a matching teardown step in the same commit.
@@ -123,7 +123,7 @@ Each role keeps its inverse in `tasks/teardown.yml`; a role that changes the hos
 | Symptom | Check |
 |---|---|
 | Not sure the host can run this at all | `just spotcheck`: each failing line names what is missing, and nothing is left behind |
-| Converge fails at "GPU smoke test" | `ssh … sudo nvidia-ctk cdi list` shows `nvidia.com/gpu=all`; `ls -l /dev/nvidia*` are readable; Podman ≥ 4.x supports CDI. As `svc-inference`: `sudo tenantctl inference podman run --rm --device nvidia.com/gpu=all --entrypoint nvidia-smi <image> -L` |
+| Converge fails at "GPU smoke test", or `unresolvable CDI devices nvidia.com/gpu=all` | `nvidia-ctk cdi list` runs as root with a newer parser, so it can say yes while Podman says no. Ask Podman: `sudo podman --log-level=debug run --rm --device nvidia.com/gpu=all docker.io/library/ubuntu:24.04 true 2>&1 \| grep -i cdi` names the file it rejected and why. Check `/etc/cdi/nvidia-podman.json` exists (`sudo spark-cdi-compat` rewrites it) and `ls -l /dev/nvidia*` are readable. As `svc-inference`: `sudo tenantctl inference podman run --rm --device nvidia.com/gpu=all --entrypoint nvidia-smi <image> -L` |
 | Model unit restarts in a loop | `sudo tenantctl inference logs inference-<key>`. Common: a `[verify]` flag unsupported by the pinned vLLM; `gpu_memory_utilization` larger than what is free; read-only root filesystem (set `read_only: false` on that model) |
 | Endpoint unreachable from the NUC | NUC address missing from `TF_VAR_client_cidrs`; `spark-ingress-drop` in the kernel log |
 | `just pull` hangs or fails on downloads | Gateway still blocks the Spark; `spark-egress-drop` lines mean the window was not open for that tenant |

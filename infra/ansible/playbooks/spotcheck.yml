@@ -14,12 +14,12 @@
 #   quadlet  the installed Podman accepts the repo's real unit templates
 #
 # It creates a throwaway tenant, svc-spotcheck (uid 2199, /srv/spotcheck), a
-# temporary nftables table, a CDI spec if none exists, and any missing apt
-# packages. All of it is removed in an `always` block, pass or fail. Keep the
+# temporary nftables table, the Podman-compatible GPU spec in /etc/cdi if the
+# converge has not written it yet, and any missing apt packages. All of it is removed in an `always` block, pass or fail. Keep the
 # packages for a converge that follows with -e spotcheck_keep_packages=true.
 #
 # Needs internet for one small image (docker.io/library/ubuntu) and for any
-# missing packages. Run: just spotcheck
+# missing packages. Run: just spotcheck (or bin/just spotcheck)
 
 - name: Spot check the compute host
   hosts: all
@@ -29,7 +29,7 @@
   vars:
     spotcheck_image: docker.io/library/ubuntu:24.04
     spotcheck_nft_table: spark_spotcheck
-    spotcheck_cdi_spec: /var/run/cdi/spark-spotcheck.yaml
+    spotcheck_cdi_spec: /etc/cdi/nvidia-podman.json # same path the converge manages
     spotcheck_keep_packages: false
     spotcheck_min_free_gb: 250 # weights for every catalog model plus images, with headroom
     # The tenant role reads spark_tenants. Here it holds only the throwaway
@@ -52,6 +52,7 @@
     spotcheck_made_account: false
     spotcheck_made_nft: false
     spotcheck_made_cdi: false
+    spotcheck_made_cdi_dir: false
 
   pre_tasks:
     # Read-only. A failure here leaves nothing behind.
@@ -95,10 +96,10 @@
     - name: Refuse to reuse anything that already exists
       ansible.builtin.assert:
         that:
-          - spotcheck_user not in getent_passwd
-          - spotcheck_user not in getent_group
-          - getent_passwd | dict2items | selectattr('value.1', 'equalto', spotcheck_uid | string) | list | length == 0
-          - getent_group | dict2items | selectattr('value.1', 'equalto', spotcheck_uid | string) | list | length == 0
+          - spotcheck_user not in ansible_facts.getent_passwd
+          - spotcheck_user not in ansible_facts.getent_group
+          - ansible_facts.getent_passwd | dict2items | selectattr('value.1', 'equalto', spotcheck_uid | string) | list | length == 0
+          - ansible_facts.getent_group | dict2items | selectattr('value.1', 'equalto', spotcheck_uid | string) | list | length == 0
           - not spotcheck_home_stat.stat.exists
         fail_msg: >-
           {{ spotcheck_user }}, uid/gid {{ spotcheck_uid }} or {{ spotcheck_home }} already exists,
@@ -166,28 +167,30 @@
             update_cache: true
             cache_valid_time: 3600
 
-        - name: Generate a temporary CDI spec
-          when: "'nvidia.com/gpu=all' not in spotcheck_cdi_before.stdout"
+        # The converge keeps a Podman-compatible GPU spec in /etc/cdi
+        # (roles/container_runtime). If it is not there yet, write it for
+        # this run with the same script, and remove it at cleanup.
+        - name: Look for the converge's Podman-compatible CDI spec
+          ansible.builtin.stat:
+            path: "{{ item }}"
+          loop:
+            - "{{ spotcheck_cdi_spec }}"
+            - "{{ spotcheck_cdi_spec | dirname }}"
+          register: spotcheck_cdi_stat
+
+        - name: Write the compatible spec for this run
+          when: not spotcheck_cdi_stat.results[0].stat.exists
           block:
-            - name: Mark the CDI spec for removal at cleanup
+            - name: Mark the spec (and its directory, if new) for removal at cleanup
               ansible.builtin.set_fact:
                 spotcheck_made_cdi: true
+                spotcheck_made_cdi_dir: "{{ not spotcheck_cdi_stat.results[1].stat.exists }}"
 
-            - name: CDI runtime directory
-              ansible.builtin.file:
-                path: "{{ spotcheck_cdi_spec | dirname }}"
-                state: directory
-                mode: "0755"
-
-            - name: Generate the spec (tmpfs; gone at reboot regardless)
-              ansible.builtin.command:
-                cmd: "nvidia-ctk cdi generate --output={{ spotcheck_cdi_spec }}"
-                creates: "{{ spotcheck_cdi_spec }}"
-
-        - name: GPU devices advertised through CDI
-          ansible.builtin.command: nvidia-ctk cdi list
-          register: spotcheck_cdi
-          changed_when: false
+            - name: Run spark-cdi-compat from the repo
+              ansible.builtin.script:
+                cmd: "{{ playbook_dir }}/../roles/container_runtime/files/spark-cdi-compat {{ spotcheck_cdi_spec }}"
+              register: spotcheck_cdi_compat
+              changed_when: true
 
         - name: Podman version
           ansible.builtin.command: podman version --format '{{ "{{" }}.Client.Version{{ "}}" }}'
@@ -199,9 +202,11 @@
             spotcheck_checks: >-
               {{ spotcheck_checks + [
                    {'name': 'cdi',
-                    'ok': 'nvidia.com/gpu=all' in spotcheck_cdi.stdout,
-                    'detail': (spotcheck_cdi.stdout_lines | select('search', 'nvidia.com/gpu') | join(' ')) ~
-                              (' (generated for this run; converge writes /etc/cdi/nvidia.yaml)' if spotcheck_made_cdi else ' (shipped)')},
+                    'ok': 'nvidia.com/gpu=all' in spotcheck_cdi_before.stdout,
+                    'detail': ('DGX OS advertises nvidia.com/gpu=all' if 'nvidia.com/gpu=all' in spotcheck_cdi_before.stdout
+                               else 'nvidia-ctk lists no nvidia.com/gpu=all') ~
+                              ('; Podman-compatible copy written for this run' if spotcheck_made_cdi
+                               else '; Podman-compatible copy present (converge)')},
                    {'name': 'podman',
                     'ok': spotcheck_podman.stdout is version('4.9', '>='),
                     'detail': 'podman ' ~ spotcheck_podman.stdout ~ ' (want >= 4.9 for the Quadlet keys used)'
@@ -400,19 +405,26 @@
           changed_when: spotcheck_nft_rm.rc == 0
           failed_when: false # never created (no gateway) is fine
 
-        - name: Remove the temporary CDI spec
+        - name: Remove the compatible CDI spec written for this run
           when: spotcheck_made_cdi | bool
           ansible.builtin.file:
             path: "{{ spotcheck_cdi_spec }}"
             state: absent
 
+        - name: Remove the CDI directory if this run created it
+          when: spotcheck_made_cdi_dir | bool
+          ansible.builtin.command:
+            cmd: "rmdir --ignore-fail-on-non-empty {{ spotcheck_cdi_spec | dirname }}"
+            removes: "{{ spotcheck_cdi_spec | dirname }}"
+
         - name: Remove packages installed for this run
           when: spotcheck_installed | length > 0 and not (spotcheck_keep_packages | bool)
           block:
-            - name: Uninstall them
+            - name: Uninstall them (purge, so no config is left behind)
               ansible.builtin.apt:
                 name: "{{ spotcheck_installed }}"
                 state: absent
+                purge: true
 
             - name: Dependencies they left orphaned
               ansible.builtin.shell: set -o pipefail; apt-get -s autoremove | awk '/^Remv/ { print $2 }'
@@ -428,6 +440,7 @@
               ansible.builtin.apt:
                 name: "{{ spotcheck_new_orphans }}"
                 state: absent
+                purge: true
 
   post_tasks:
     - name: Results

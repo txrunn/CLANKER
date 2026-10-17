@@ -18,7 +18,7 @@
     group: "{{ tenant_name }}"
     groups: []
     home: "{{ tenant_home }}"
-    create_home: true
+    create_home: false # created empty below: no /etc/skel dotfiles or Desktop/ in a service account
     shell: /usr/sbin/nologin
     password: "!"
     password_lock: true

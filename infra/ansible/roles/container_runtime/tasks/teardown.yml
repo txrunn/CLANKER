@@ -1,6 +1,7 @@
 ---
-# Inverse of main.yml. The CDI spec stays: DGX OS may have shipped it, and
-# other GPU containers on the host may rely on it.
+# Inverse of main.yml. DGX OS's own CDI spec (and /etc/cdi/nvidia.yaml, if the
+# converge generated one with compat off) stays: other GPU containers on the
+# host may rely on it.
 - name: Remove containers drop-ins
   ansible.builtin.file:
     path: "{{ item }}"
@@ -8,3 +9,21 @@
   loop:
     - /etc/containers/registries.conf.d/50-spark.conf
     - /etc/containers/containers.conf.d/50-spark.conf
+
+- name: Remove the Podman-compatible CDI spec, its script and refresh hook
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - "{{ container_runtime_cdi_compat_spec }}"
+    - /usr/local/sbin/spark-cdi-compat
+    - "{{ container_runtime_cdi_refresh_dropin }}"
+  notify: Reload systemd
+
+- name: Remove directories left empty
+  ansible.builtin.command:
+    cmd: "rmdir --ignore-fail-on-non-empty {{ item }}"
+    removes: "{{ item }}"
+  loop:
+    - "{{ container_runtime_cdi_refresh_dropin | dirname }}"
+    - "{{ container_runtime_cdi_compat_spec | dirname }}"

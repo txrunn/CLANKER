@@ -94,8 +94,8 @@ pull:
 spotcheck *args:
     #!/usr/bin/env bash
     set -euo pipefail
-    [[ -f .env ]] || { echo "No .env yet. Run: just env, then set TF_VAR_spark_host and TF_VAR_admin_user in it." >&2; exit 1; }
-    [[ -x .venv/bin/ansible-playbook ]] || { echo "Ansible not installed yet. Run: just bootstrap" >&2; exit 1; }
+    [[ -f .env ]] || { echo "No .env yet. Run: just env (or bin/just env), then set TF_VAR_spark_host and TF_VAR_admin_user in it." >&2; exit 1; }
+    [[ -x .venv/bin/ansible-playbook ]] || { echo "Ansible not installed yet. Run: just bootstrap (or bin/just bootstrap)" >&2; exit 1; }
     for v in TF_VAR_spark_host TF_VAR_admin_user; do
       [[ -n "${!v:-}" ]] || { echo "$v is empty in .env." >&2; exit 1; }
     done
@@ -106,7 +106,8 @@ spotcheck *args:
     me=$(hostname -s)
     case "${TF_VAR_spark_host,,}" in
       localhost|127.0.0.1|::1|"${me,,}"|"${me,,}.local"|"$(hostname -f 2>/dev/null | tr A-Z a-z)")
-        conn=(-c local) ;;
+        # The system Python: the tenant accounts cannot read this repo's .venv.
+        conn=(-c local -e ansible_python_interpreter=/usr/bin/python3) ;;
       *) conn=(-u "$TF_VAR_admin_user" -e ansible_port="${TF_VAR_ssh_port:-22}") ;;
     esac
     cd {{ ansible_dir }}
